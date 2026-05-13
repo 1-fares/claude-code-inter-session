@@ -277,8 +277,11 @@ The WebSocket port and idle-shutdown timeout are configurable via
 - WebSocket frame size: 16 MB.
 - Direct `text` length: 10 MB.
 - Broadcast `text` length: 256 KB.
-- Stdout notification: 256 KB (above this, truncate + log pointer to
-  `~/.claude/data/inter-session/messages.log`).
+- Stdout notification body: 400 chars (Claude Code clips monitor
+  notifications at ~512 chars total; the cap leaves room for our
+  prefix). Above this, the receiver sees a truncated first line plus
+  a `cont` pointer line to `~/.claude/data/inter-session/messages.log`,
+  where the full payload is always preserved.
 - Broadcast rate: 60 / minute / session.
 
 ## Development

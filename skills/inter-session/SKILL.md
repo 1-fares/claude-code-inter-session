@@ -289,10 +289,11 @@ default for fresh installs is `off` (lazy).
 
 ## Truncated messages
 
-Long messages (> ~256 KB) arrive in two lines:
+Long messages (whose body exceeds the ~400-char stdout cap) arrive in
+two lines:
 
 ```
-[inter-session msg=q7r8 from="data-pipe" truncated=2097152] <first 256 KB of text>
+[inter-session msg=q7r8 from="data-pipe" truncated=2097152] <first ~400 chars of text>
 [inter-session msg=q7r8 cont] full text 2.0 MB at ~/.claude/data/inter-session/messages.log
 ```
 

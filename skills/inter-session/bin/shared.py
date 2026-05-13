@@ -16,7 +16,15 @@ DEFAULT_PORT = 9473
 WS_FRAME_CAP = 16 * 1024 * 1024
 TEXT_CAP = 10 * 1024 * 1024
 BROADCAST_TEXT_CAP = 256 * 1024
-STDOUT_CAP = 256 * 1024
+# Body cap for the stdout notification line that Claude Code's monitor
+# delivers to the receiving LLM. Empirically (issue #2), CC clips each
+# notification at ~512 chars total, so above this budget the truncated=
+# marker and cont-pointer line never reach the LLM. 400 leaves room for
+# our prefix (`[inter-session msg=… from="…" "…" truncated=N] `) under
+# the 512 limit in typical cases; very long name+label combos may still
+# clip, but the cont-pointer line is short and always fits, so the LLM
+# still gets the messages.log path for full content.
+STDOUT_CAP = 400
 MAX_HOPS = 4
 PING_INTERVAL_S = 15
 PONG_TIMEOUT_S = 30

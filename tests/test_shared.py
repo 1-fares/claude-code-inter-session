@@ -228,7 +228,7 @@ class TestProtocolConstants:
         assert shared.WS_FRAME_CAP == 16 * 1024 * 1024
         assert shared.TEXT_CAP == 10 * 1024 * 1024
         assert shared.BROADCAST_TEXT_CAP == 256 * 1024
-        assert shared.STDOUT_CAP == 256 * 1024
+        assert shared.STDOUT_CAP == 400
         assert shared.TEXT_CAP < shared.WS_FRAME_CAP
 
     def test_default_port(self):

@@ -211,7 +211,7 @@ blue → "tracked in PATCH_LOG.md (24 entries). all classes hardened.
 - WebSocket 帧大小:16 MB。
 - 直接消息 `text` 长度:10 MB。
 - 广播 `text` 长度:256 KB。
-- 标准输出通知:256 KB(超出会截断，并记录指向 `~/.claude/data/inter-session/messages.log` 的指针)。
+- 标准输出通知正文:400 字符(Claude Code 在 ~512 字符处截断每条 monitor 通知，因此正文上限为前缀预留了空间)。超出后会截断为首行加一行指向 `~/.claude/data/inter-session/messages.log` 的 `cont` 指针,完整内容在该日志中始终保留。
 - 广播频率:每个会话每分钟 60 次。
 
 ## 开发

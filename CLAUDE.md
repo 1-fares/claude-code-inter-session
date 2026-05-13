@@ -152,16 +152,17 @@ by name; labels are display-only. Don't try to address by label.
 
 ### Three-tier size limits
 
-| Limit                        | Value                                      |
-| :--------------------------- | :----------------------------------------- |
-| WebSocket frame              | 16 MB                                      |
-| Direct `text` length         | 10 MB (server-enforced)                    |
-| Broadcast `text` length      | 256 KB (server-enforced)                   |
-| Stdout notification          | 256 KB (truncate + log pointer above this) |
+| Limit                          | Value                                       |
+| :----------------------------- | :------------------------------------------ |
+| WebSocket frame                | 16 MB                                       |
+| Direct `text` length           | 10 MB (server-enforced)                     |
+| Broadcast `text` length        | 256 KB (server-enforced)                    |
+| Stdout notification body       | 400 chars (issue #2: Claude Code clips each monitor notification at ~512 chars total, so the body cap is sized to leave room for our prefix) |
 
-Direct messages > 256 KB display as a truncated first-line and a `cont`
-line pointing to `messages.log` so the receiver can fetch the full
-payload via `grep -F <msg_id>`.
+Direct messages whose body exceeds the stdout cap display as a truncated
+first-line and a `cont` line pointing to `messages.log` so the receiver
+can fetch the full payload via `grep -F <msg_id>`. Truncated content is
+preserved in full in `messages.log` regardless.
 
 ### Reaction policy lives in `SKILL.md`
 
