@@ -305,7 +305,7 @@ surface this to the user after running.
 user first invokes any `/inter-session` command in a session). The
 default for fresh installs is `off` (lazy).
 
-## Sending long content — use a file pointer
+## Sending long content: use a file pointer
 
 The stdout notification a peer receives is capped at ~400 chars (Claude
 Code clips each monitor line at ~512). **For any message longer than a
