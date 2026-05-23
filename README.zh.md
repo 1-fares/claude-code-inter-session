@@ -36,6 +36,7 @@ Claude Code 本身已有两种并发机制:[subagent](https://code.claude.com/do
 
 - Python ≥ 3.10
 - Claude Code ≥ 2.1.105
+- 实时送达依赖 Claude Code 的 `Monitor` 工具。只要设置了 `DISABLE_TELEMETRY` 或 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`(任一即可),该工具就不可用,且变量必须**缺省**,设为 `"0"` 仍算「已设置」。没有 `Monitor` 时,客户端退化为轮询送达:接收方在被提示去读取收件箱之前,不会因新消息而唤醒。
 
 ## 安装
 

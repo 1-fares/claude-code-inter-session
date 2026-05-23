@@ -64,6 +64,12 @@ natural fit — your existing sessions become the team.
 
 - Python ≥ 3.10
 - Claude Code ≥ 2.1.105
+- Real-time delivery uses Claude Code's `Monitor` tool, which is
+  unavailable if `DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`
+  is set (either one disables it, and the variable must be **absent**,
+  `"0"` still counts as set). Without `Monitor`, the client falls back to
+  poll-based delivery: the receiver does not wake on incoming messages
+  until something prompts it to read its inbox.
 
 ## Install
 
