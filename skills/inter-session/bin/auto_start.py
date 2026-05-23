@@ -119,6 +119,22 @@ def cmd_set(target: str) -> int:
     return 0
 
 
+def _invoked_as_standalone_skill(invoked: Path | None = None) -> bool:
+    """True when invoked from a standalone-skill install
+    (`~/.claude/skills/<name>/`), where Claude Code never reads
+    `monitors.json`, so auto-start has no effect. Keys on the *invocation*
+    path (unresolved `__file__`), not its resolved symlink target, which for a
+    symlinked dev install points at the repo. Plugin and `--plugin-dir`
+    installs live elsewhere and return False."""
+    if invoked is None:
+        try:
+            invoked = Path(__file__)
+        except NameError:
+            return False
+    skills_root = Path.home() / ".claude" / "skills"
+    return skills_root in invoked.parents
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     g = parser.add_mutually_exclusive_group(required=True)
@@ -126,6 +142,20 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--on", action="store_true", help=f'set when="{ALWAYS}"')
     g.add_argument("--off", action="store_true", help=f'set when="{LAZY}"')
     args = parser.parse_args(argv)
+
+    # auto-start only affects plugin installs (Claude Code reads monitors.json
+    # there). In a standalone-skill install it does nothing, and editing the
+    # repo's monitors.json via the symlink would silently mislead. Bail with a
+    # clear message. An explicit CLAUDE_PLUGIN_ROOT means a real plugin/dev
+    # context, so honor it.
+    if not os.environ.get("CLAUDE_PLUGIN_ROOT") and _invoked_as_standalone_skill():
+        print(
+            "auto-start is a plugin-only feature and has no effect here: this is "
+            "a standalone-skill install (~/.claude/skills/...), where Claude Code "
+            "does not read monitors.json. The monitor starts when you first run "
+            "/is in a session; there's nothing to toggle."
+        )
+        return 0
 
     if args.status:
         return cmd_status()

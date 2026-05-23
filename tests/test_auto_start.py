@@ -130,3 +130,48 @@ class TestErrors:
         # No flags → argparse should fail (mutually exclusive group, required=True)
         r = _run([], fake_plugin_root)
         assert r.returncode != 0
+
+
+class TestStandaloneSkillDetection:
+    def test_skills_path_is_standalone(self):
+        from bin import auto_start
+        p = Path.home() / ".claude" / "skills" / "is" / "bin" / "auto_start.py"
+        assert auto_start._invoked_as_standalone_skill(p) is True
+
+    def test_repo_path_is_not_standalone(self):
+        from bin import auto_start
+        p = Path("/home/x/projects/repo/skills/inter-session/bin/auto_start.py")
+        assert auto_start._invoked_as_standalone_skill(p) is False
+
+    def test_standalone_invocation_is_noop(self, tmp_path: Path):
+        # A copy living under $HOME/.claude/skills/... must report a no-op and
+        # touch no monitors.json, instead of silently editing the dev repo's.
+        skill_bin = tmp_path / ".claude" / "skills" / "is" / "bin"
+        skill_bin.mkdir(parents=True)
+        copied = skill_bin / "auto_start.py"
+        copied.write_text(SCRIPT.read_text())
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
+        r = subprocess.run(
+            [sys.executable, str(copied), "--on"],
+            capture_output=True, text=True, env=env,
+        )
+        assert r.returncode == 0
+        assert "plugin-only" in r.stdout
+
+    def test_plugin_root_env_overrides_standalone(self, tmp_path: Path, fake_plugin_root: Path):
+        # An explicit CLAUDE_PLUGIN_ROOT means a real plugin/dev context: even
+        # when invoked from under ~/.claude/skills, proceed and edit it.
+        skill_bin = tmp_path / ".claude" / "skills" / "is" / "bin"
+        skill_bin.mkdir(parents=True)
+        copied = skill_bin / "auto_start.py"
+        copied.write_text(SCRIPT.read_text())
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path),
+               "CLAUDE_PLUGIN_ROOT": str(fake_plugin_root)}
+        r = subprocess.run(
+            [sys.executable, str(copied), "--on"],
+            capture_output=True, text=True, env=env,
+        )
+        assert r.returncode == 0
+        assert "plugin-only" not in r.stdout
+        data = json.loads((fake_plugin_root / "monitors" / "monitors.json").read_text())
+        assert data[0]["when"] == ALWAYS
