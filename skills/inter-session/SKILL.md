@@ -256,7 +256,11 @@ Rare on modern macOS / Linux / WSL2, but if the venv module is missing
 list:        Bash("python3 <bin>/list.py")
 send:        Bash("python3 <bin>/send.py --to <target> --text '<text>'")
 broadcast:   Bash("python3 <bin>/send.py --all --text '<text>'")
+send file:   Bash("python3 <bin>/send.py --to <target> --file <path>")
 ```
+
+For anything longer than a short sentence, prefer `--file` (see *Sending
+long content* below) so the receiver gets the full text untruncated.
 
 Quote `<text>` carefully — single-quote it and escape single quotes via
 `'\''`. If the user's text contains backticks or `$()`, single-quoting
@@ -301,43 +305,50 @@ surface this to the user after running.
 user first invokes any `/inter-session` command in a session). The
 default for fresh installs is `off` (lazy).
 
-## Multi-part and truncated messages
+## Sending long content — use a file pointer
 
-Claude Code clips each monitor notification at ~512 chars, so a message
-body is delivered in one of three shapes depending on length:
+The stdout notification a peer receives is capped at ~400 chars (Claude
+Code clips each monitor line at ~512). **For any message longer than a
+short sentence, send a file pointer instead of inlining the text.** The
+sender writes the content to a file and sends a tiny pointer message; the
+receiver reads the file in full with its own Read tool, so nothing is
+truncated.
 
-1. **Short** (fits one line): a single notification, no `part` marker.
-2. **Medium** (above the single-line cap, within the inline-parts
-   budget): split across several `part=i/N` lines that together carry the
-   **full** text. Reassemble them in order — the bodies concatenate with
-   no separator:
+Prefer the built-in `--file` flag, which composes the pointer for you:
 
-   ```
-   [inter-session msg=q7r8 from="planner" part=1/3] <first chunk>
-   [inter-session msg=q7r8 from="planner" part=2/3] <second chunk>
-   [inter-session msg=q7r8 from="planner" part=3/3] <final chunk>
-   ```
+```
+send a file:   Bash("python3 <bin>/send.py --to <target> --file <path>")
+broadcast it:  Bash("python3 <bin>/send.py --all --file <path>")
+with a note:   Bash("python3 <bin>/send.py --to <target> --text '<note>' --file <path>")
+```
 
-   Same `msg=<id>`, ascending `part=i/N`. Treat the joined text as one
-   message and apply the Reaction policy to it as a whole.
-3. **Oversized** (beyond the inline-parts budget, e.g. multi-KB/MB): a
-   single truncated line plus a cont-pointer, so a huge payload can't
-   flood context with thousands of lines:
+The peer receives a short line like
+`read and execute the task in the file at /abs/path` (well under the cap),
+opens the file, and acts on the full content. The path is resolved to an
+absolute path and must exist when you send.
 
-   ```
-   [inter-session msg=q7r8 from="data-pipe" truncated=2097152] <first ~400 chars>
-   [inter-session msg=q7r8 cont] full text 2.0 MB at ~/.claude/data/inter-session/messages.log
-   ```
+When to use this: long instructions, multi-step specs, code to apply,
+anything over a line or two. For a quick one-liner, `--text` is fine.
 
-   Fetch the full payload (JSONL record) from the log:
+## Truncated messages
 
-   ```
-   Bash("grep -F '<msg_id>' ~/.claude/data/inter-session/messages.log | tail -1")
-   ```
+If a long body is sent inline with `--text` anyway (above the ~400-char
+cap), it arrives in two lines:
 
-The inline-parts budget is `PART_BODY_CAP * MAX_INLINE_PARTS` in
-`shared.py`. The full payload is always preserved verbatim in
-`messages.log` regardless of which shape was delivered.
+```
+[inter-session msg=q7r8 from="data-pipe" truncated=2097152] <first ~400 chars of text>
+[inter-session msg=q7r8 cont] full text 2.0 MB at ~/.claude/data/inter-session/messages.log
+```
+
+The full payload is in `~/.claude/data/inter-session/messages.log` as a
+JSONL record. Fetch it with:
+
+```
+Bash("grep -F '<msg_id>' ~/.claude/data/inter-session/messages.log | tail -1")
+```
+
+This is the fallback; prefer the file pointer above so the receiver gets
+the full content directly.
 
 ## Error notifications
 

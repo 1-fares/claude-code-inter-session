@@ -13,10 +13,37 @@ from pathlib import Path
 
 import pytest
 
-from bin import shared
+from bin import shared, send as send_mod
 
 REPO = Path(__file__).resolve().parent.parent
 BIN_DIR = REPO / "skills" / "inter-session" / "bin"
+
+
+class TestComposeText:
+    def test_plain_text_passthrough(self):
+        assert send_mod._compose_text("hello", None) == "hello"
+
+    def test_file_pointer_message(self, tmp_path):
+        f = tmp_path / "spec.md"
+        f.write_text("do the thing")
+        out = send_mod._compose_text(None, str(f))
+        assert str(f.resolve()) in out
+        assert "read and execute" in out
+
+    def test_file_pointer_with_note(self, tmp_path):
+        f = tmp_path / "spec.md"
+        f.write_text("x")
+        out = send_mod._compose_text("urgent", str(f))
+        assert out.startswith("urgent")
+        assert str(f.resolve()) in out
+
+    def test_missing_file_raises(self, tmp_path):
+        with pytest.raises(OSError):
+            send_mod._compose_text(None, str(tmp_path / "nope.md"))
+
+    def test_directory_not_regular_file(self, tmp_path):
+        with pytest.raises(ValueError):
+            send_mod._compose_text(None, str(tmp_path))
 
 
 @pytest.fixture

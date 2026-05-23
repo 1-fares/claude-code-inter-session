@@ -25,17 +25,6 @@ BROADCAST_TEXT_CAP = 256 * 1024
 # clip, but the cont-pointer line is short and always fits, so the LLM
 # still gets the messages.log path for full content.
 STDOUT_CAP = 400
-# Per-line body cap for multi-part delivery. A `part=i/N` token is shorter
-# than the worst-case `truncated=<full_len>` token, but we size the part
-# body slightly below STDOUT_CAP to keep margin under CC's ~512-char clip
-# once the part marker is added to the prefix.
-PART_BODY_CAP = 360
-# Max number of inline part lines emitted for one message. Bodies up to
-# PART_BODY_CAP * MAX_INLINE_PARTS are delivered in full across this many
-# notifications; larger bodies fall back to a single truncated line plus a
-# cont-pointer to messages.log, so a multi-KB/MB payload can't flood the
-# receiver's context with thousands of lines.
-MAX_INLINE_PARTS = 4
 MAX_HOPS = 4
 PING_INTERVAL_S = 15
 PONG_TIMEOUT_S = 30
@@ -169,32 +158,6 @@ def truncate_for_stdout(s: str, cap: int = STDOUT_CAP) -> tuple[str, bool, int]:
     if full_len <= cap:
         return s, False, full_len
     return s[:cap], True, full_len
-
-
-def chunk_for_stdout(
-    s: str,
-    cap: int = PART_BODY_CAP,
-    max_parts: int = MAX_INLINE_PARTS,
-) -> tuple[list[str], bool, int]:
-    """Decide how to deliver a message body over the stdout notification channel.
-
-    Returns (chunks, overflow, full_len):
-      - body <= STDOUT_CAP        -> ([body], False)            one normal line
-      - body <= cap * max_parts   -> (parts, False)             multi-part lines
-      - larger                    -> ([body[:STDOUT_CAP]], True) overflow: caller
-                                      emits a truncated line + cont-pointer
-
-    The bound on inline parts keeps a large payload from expanding into
-    thousands of notification lines; oversized bodies stay a single truncated
-    line whose full content lives in messages.log.
-    """
-    full_len = len(s)
-    if full_len <= STDOUT_CAP:
-        return [s], False, full_len
-    if full_len <= cap * max_parts:
-        chunks = [s[i:i + cap] for i in range(0, full_len, cap)]
-        return chunks, False, full_len
-    return [s[:STDOUT_CAP]], True, full_len
 
 
 def ensure_token(path: Path) -> str:

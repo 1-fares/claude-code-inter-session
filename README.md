@@ -264,6 +264,7 @@ for the plugin. Every subcommand has a short alias, so `/is send …` and
 | `/is connect [name]`               | `/is c [name]` | Connect to the bus; `name` proposed from context if omitted. |
 | `/is list`                         | `/is l`        | List connected sessions.                                     |
 | `/is send <name> <text>`           | `/is s …`      | Send a message to one session.                              |
+| `/is send <name> --file <path>`    | —              | Send a file pointer; the receiver reads the file in full (use for long content, avoids the notification cap). |
 | `/is broadcast <text>`             | `/is b …`      | Send to all other sessions (≤ 256 KB).                       |
 | `/is rename <new-name>`            | `/is r …`      | Rename — implemented as disconnect + reconnect.              |
 | `/is status`                       | `/is st`       | Heuristic connection state.                                  |
@@ -300,12 +301,13 @@ The WebSocket port and idle-shutdown timeout are configurable via
 - WebSocket frame size: 16 MB.
 - Direct `text` length: 10 MB.
 - Broadcast `text` length: 256 KB.
-- Stdout notification body: 400 chars per line (Claude Code clips monitor
-  notifications at ~512 chars total; the cap leaves room for our prefix).
-  Longer messages are delivered in full across up to four `part=i/N` lines
-  (≈1440 chars). Beyond that budget, the receiver sees a truncated first
-  line plus a `cont` pointer to `~/.claude/data/inter-session/messages.log`,
-  where the full payload is always preserved.
+- Stdout notification body: 400 chars (Claude Code clips monitor
+  notifications at ~512 chars total; the cap leaves room for our
+  prefix). Above this, the receiver sees a truncated first line plus
+  a `cont` pointer line to `~/.claude/data/inter-session/messages.log`,
+  where the full payload is always preserved. **For long content, send a
+  file pointer instead** (`send --file <path>`, see below) so the receiver
+  reads the full text untruncated.
 - Broadcast rate: 60 / minute / session.
 
 ## Development

@@ -124,42 +124,6 @@ class TestTruncateForStdout:
         assert len(truncated) <= 100
 
 
-class TestChunkForStdout:
-    def test_short_single_chunk(self):
-        assert shared.chunk_for_stdout("hello") == (["hello"], False, 5)
-
-    def test_at_stdout_cap_single_chunk(self):
-        s = "x" * shared.STDOUT_CAP
-        chunks, overflow, full_len = shared.chunk_for_stdout(s)
-        assert chunks == [s]
-        assert overflow is False
-        assert full_len == shared.STDOUT_CAP
-
-    def test_medium_splits_bounded(self):
-        s = "x" * (shared.STDOUT_CAP + 1)
-        chunks, overflow, full_len = shared.chunk_for_stdout(s)
-        assert overflow is False
-        assert len(chunks) >= 2
-        assert "".join(chunks) == s
-        assert all(len(c) <= shared.PART_BODY_CAP for c in chunks)
-        assert full_len == len(s)
-
-    def test_max_inline_boundary_no_overflow(self):
-        s = "x" * (shared.PART_BODY_CAP * shared.MAX_INLINE_PARTS)
-        chunks, overflow, _ = shared.chunk_for_stdout(s)
-        assert overflow is False
-        assert len(chunks) == shared.MAX_INLINE_PARTS
-        assert "".join(chunks) == s
-
-    def test_over_budget_overflows(self):
-        s = "x" * (shared.PART_BODY_CAP * shared.MAX_INLINE_PARTS + 1)
-        chunks, overflow, full_len = shared.chunk_for_stdout(s)
-        assert overflow is True
-        assert len(chunks) == 1
-        assert len(chunks[0]) <= shared.STDOUT_CAP
-        assert full_len == len(s)
-
-
 class TestAtomicToken:
     def test_creates_token_if_missing(self, tmp_path):
         token_path = tmp_path / "token"

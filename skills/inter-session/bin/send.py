@@ -28,6 +28,24 @@ import websockets
 from bin import shared, discover
 
 
+def _compose_text(text, file) -> str:
+    """Build the message body to send.
+
+    With --file, send a short pointer instructing the receiver to read the
+    file directly (via its own Read tool) rather than streaming the body
+    through the bus. This sidesteps the stdout notification cap entirely:
+    the pointer is tiny, and the receiver gets the full content from the
+    file. The path is resolved to an absolute path and must exist."""
+    if file:
+        abspath = Path(file).expanduser().resolve(strict=True)  # raises if missing
+        if not abspath.is_file():
+            raise ValueError(f"not a regular file: {abspath}")
+        if text:
+            return f"{text} (read the file at {abspath} and act on it)"
+        return f"read and execute the task in the file at {abspath}"
+    return text
+
+
 async def _run(args) -> int:
     state, state_path = discover.find_listener_state_with_path()
     if state is None:
@@ -113,10 +131,17 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--to", help="target name or short session_id (omit with --all)")
     parser.add_argument("--all", action="store_true", help="broadcast to all other sessions")
-    parser.add_argument("--text", required=True)
+    parser.add_argument("--text", help="message text (required unless --file)")
+    parser.add_argument("--file", help="send a pointer to a file for the receiver to read and execute")
     args = parser.parse_args()
     if not args.all and not args.to:
         parser.error("--to required unless --all")
+    if not args.text and not args.file:
+        parser.error("one of --text or --file is required")
+    try:
+        args.text = _compose_text(args.text, args.file)
+    except (OSError, ValueError) as e:
+        parser.error(f"--file: {e}")
     return asyncio.run(_run(args))
 
 

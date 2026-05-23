@@ -70,51 +70,28 @@ class TestFormatMsg:
     def test_basic_msg(self):
         msg = {"op": "msg", "msg_id": "ab12", "from": "x", "from_name": "alpha",
                "from_label": "", "text": "hello"}
-        lines = client_mod._format_msg_lines(msg)
-        assert len(lines) == 1
-        out = lines[0]
+        out = client_mod._format_msg(msg)
         assert 'from="alpha"' in out
         assert 'msg=ab12' in out
         assert out.endswith("hello")
-        assert "part=" not in out
 
     def test_with_label(self):
         msg = {"msg_id": "x", "from_name": "alpha", "from_label": "重构", "text": "hi"}
-        lines = client_mod._format_msg_lines(msg)
-        assert len(lines) == 1
-        assert 'from="alpha"' in lines[0]
-        assert '"重构"' in lines[0]
+        out = client_mod._format_msg(msg)
+        assert 'from="alpha"' in out
+        assert '"重构"' in out
 
-    def test_medium_msg_splits_into_parts(self):
-        # Body above the single-line cap but within the inline-parts budget
-        # arrives as multiple part=i/N lines carrying the full text — no
-        # truncation marker and no cont-pointer.
-        big = "y" * (shared.STDOUT_CAP + shared.PART_BODY_CAP)
+    def test_truncates(self):
+        big = "y" * (shared.STDOUT_CAP + 1000)
         msg = {"msg_id": "x", "from_name": "alpha", "from_label": "", "text": big}
-        lines = client_mod._format_msg_lines(msg)
-        assert len(lines) >= 2
-        assert all("truncated=" not in ln for ln in lines)
-        assert all("cont]" not in ln for ln in lines)
-        total = len(lines)
-        for i, ln in enumerate(lines, 1):
-            assert f"part={i}/{total}]" in ln
-        recovered = "".join(ln.split("] ", 1)[1] for ln in lines)
-        assert recovered == big
-
-    def test_oversized_msg_truncates_with_pointer(self):
-        big = "y" * (shared.PART_BODY_CAP * shared.MAX_INLINE_PARTS + 1000)
-        msg = {"msg_id": "x", "from_name": "alpha", "from_label": "", "text": big}
-        lines = client_mod._format_msg_lines(msg)
-        assert len(lines) == 2
-        assert "truncated=" in lines[0]
-        assert "cont]" in lines[1]
-        assert len(lines[0]) <= shared.STDOUT_CAP + 200  # prefix overhead
+        out = client_mod._format_msg(msg)
+        assert "truncated=" in out
+        assert len(out) <= shared.STDOUT_CAP + 200  # prefix overhead
 
     def test_sanitizes(self):
         msg = {"msg_id": "x", "from_name": "alpha", "from_label": "",
                "text": "\x1b[31mred\x1b[0m\nhi"}
-        lines = client_mod._format_msg_lines(msg)
-        out = lines[0]
+        out = client_mod._format_msg(msg)
         assert "\x1b" not in out
         assert "\n" not in out  # newline replaced by ↵
         assert "↵" in out

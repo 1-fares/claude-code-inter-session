@@ -197,6 +197,7 @@ blue → "tracked in PATCH_LOG.md (24 entries). all classes hardened.
 | `/is connect [name]`               | `/is c [name]` | 连接到总线；省略 `name` 时由 Claude 根据上下文提议。               |
 | `/is list`                         | `/is l`        | 列出已连接的会话。                                                 |
 | `/is send <name> <text>`           | `/is s …`      | 向某一个会话发送消息。                                             |
+| `/is send <name> --file <path>`    | —              | 发送文件指针;接收方完整读取该文件(用于较长内容,绕过通知字符上限)。 |
 | `/is broadcast <text>`             | `/is b …`      | 向所有其他会话广播(≤ 256 KB)。                                    |
 | `/is rename <new-name>`            | `/is r …`      | 改名 —— 实现为断开 + 重连。                                        |
 | `/is status`                       | `/is st`       | 启发式连接状态。                                                   |
@@ -225,7 +226,7 @@ blue → "tracked in PATCH_LOG.md (24 entries). all classes hardened.
 - WebSocket 帧大小:16 MB。
 - 直接消息 `text` 长度:10 MB。
 - 广播 `text` 长度:256 KB。
-- 标准输出通知正文:每行 400 字符(Claude Code 在 ~512 字符处截断每条 monitor 通知，正文上限为前缀预留了空间)。较长的消息会拆分到至多四行 `part=i/N`(约 1440 字符)完整送达。超过该预算后,接收方看到截断的首行加一行指向 `~/.claude/data/inter-session/messages.log` 的 `cont` 指针,完整内容在该日志中始终保留。
+- 标准输出通知正文:400 字符(Claude Code 在 ~512 字符处截断每条 monitor 通知，正文上限为前缀预留了空间)。超出后会截断为首行加一行指向 `~/.claude/data/inter-session/messages.log` 的 `cont` 指针,完整内容在该日志中始终保留。**较长内容请改用文件指针**(`send --file <path>`,见下文),接收方会完整读取文件,不会被截断。
 - 广播频率:每个会话每分钟 60 次。
 
 ## 开发

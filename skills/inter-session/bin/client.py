@@ -48,29 +48,18 @@ def _print_line(line: str) -> None:
     sys.stdout.flush()
 
 
-def _format_msg_lines(msg: dict) -> list[str]:
-    """Render an incoming message into one or more notification lines.
-
-    Short bodies are a single line. Medium bodies are split into `part=i/N`
-    lines that each fit the stdout clip, so the receiver gets the full text
-    without a log round-trip. Oversized bodies stay a single truncated line
-    plus a cont-pointer to messages.log (avoids flooding context)."""
+def _format_msg(msg: dict) -> str:
     sanitized = shared.sanitize_for_stdout(msg.get("text", ""))
-    chunks, overflow, full_len = shared.chunk_for_stdout(sanitized)
+    truncated, was_truncated, full_len = shared.truncate_for_stdout(sanitized)
     from_name = msg.get("from_name") or msg.get("from", "?")[:8]
     from_label = msg.get("from_label", "")
     msg_id = msg.get("msg_id", "")
     label_part = f' "{from_label}"' if from_label else ""
-    base = f'[inter-session msg={msg_id} from="{from_name}"{label_part}'
-    if overflow:
-        return [
-            f"{base} truncated={full_len}] {chunks[0]}",
-            _format_truncation_pointer(msg_id, full_len),
-        ]
-    if len(chunks) == 1:
-        return [f"{base}] {chunks[0]}"]
-    total = len(chunks)
-    return [f"{base} part={i}/{total}] {chunk}" for i, chunk in enumerate(chunks, 1)]
+    if was_truncated:
+        prefix = f'[inter-session msg={msg_id} from="{from_name}"{label_part} truncated={full_len}]'
+    else:
+        prefix = f'[inter-session msg={msg_id} from="{from_name}"{label_part}]'
+    return f"{prefix} {truncated}"
 
 
 def _format_truncation_pointer(msg_id: str, full_len: int) -> str:
@@ -340,8 +329,12 @@ class Client:
                         continue
                     op = payload.get("op")
                     if op == "msg":
-                        for line in _format_msg_lines(payload):
-                            _print_line(line)
+                        line = _format_msg(payload)
+                        _print_line(line)
+                        sanitized = shared.sanitize_for_stdout(payload.get("text", ""))
+                        truncated, was_truncated, full_len = shared.truncate_for_stdout(sanitized)
+                        if was_truncated:
+                            _print_line(_format_truncation_pointer(payload.get("msg_id", ""), full_len))
                     elif op in ("peer_joined", "peer_left", "renamed"):
                         if self.verbose:
                             _print_line(f"[inter-session] {op}: {payload}")
