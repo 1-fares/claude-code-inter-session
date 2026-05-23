@@ -290,6 +290,13 @@ The WebSocket port and idle-shutdown timeout are configurable via
   connect. This is acceptable for single-user, single-machine.
 - The token does **not** protect against malicious code running as your
   user. If you don't trust local code, don't enable inter-session.
+- **Conscious single-user relaxations:** two same-UID guards are
+  deliberately disabled. (1) Control connections are not nonce-verified, so
+  any local process may act on behalf of any session. (2) Clients do not
+  verify the server's identity before sending the token. Both trade
+  same-UID-impersonation / port-squatter defense for simplicity, and assume
+  you are the sole, trusted user of the machine. To make this multi-user or
+  non-localhost, restore both (see CLAUDE.md "Trust model").
 - The receiving agent's reaction policy (see
   [SKILL.md](./skills/inter-session/SKILL.md)) treats peer messages as
   instructions but applies the same caution as user input —

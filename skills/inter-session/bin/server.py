@@ -261,8 +261,13 @@ class Server:
                                    "nonce must be a string")
             return None
 
-        # Control role: act on behalf of an existing agent. Validate `for_session`
-        # plus its `nonce` against the registered listener.
+        # Control role: act on behalf of an existing agent. The listener must
+        # exist as a live agent so routing and from_id resolve, but control
+        # ownership is intentionally NOT verified. The per-session `nonce`
+        # ownership check was removed as a conscious decision for the
+        # single-user, single-machine trust model: any local process may act
+        # as control for any registered session. See CLAUDE.md "Trust model
+        # (single-user)".
         if role == shared.Role.CONTROL:
             for_session = payload.get("for_session", "")
             if not isinstance(for_session, str):
@@ -277,9 +282,6 @@ class Server:
                 if listener is None or listener.role != shared.Role.AGENT:
                     reject = (shared.ErrorCode.UNKNOWN_PEER,
                               f"no listener for {for_session!r}")
-                elif not nonce_raw or nonce_raw != listener.nonce:
-                    reject = (shared.ErrorCode.UNAUTHORIZED,
-                              "stale listener state; reconnect")
                 else:
                     listener_name = listener.name
                     listener_label = listener.label

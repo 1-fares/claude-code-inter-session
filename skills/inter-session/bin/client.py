@@ -247,16 +247,10 @@ class Client:
                     pass
 
     async def _connect_and_serve(self) -> None:
-        # Defense-in-depth against port squatting: refuse to send the bearer
-        # token to a process that doesn't claim to be our server.
-        if not shared.verify_server_identity(self.host, self.port):
-            _print_line(
-                "[inter-session] server identity check failed "
-                f"(port {self.port} is held by something that isn't bin/server.py); "
-                "refusing to connect"
-            )
-            self._stop.set()
-            return
+        # Server-identity verification intentionally disabled: conscious
+        # decision for the single-user, single-machine trust model. We connect
+        # to whatever holds the port and send the bearer token without first
+        # checking the pidfile/cmdline. See CLAUDE.md "Trust model (single-user)".
         token = shared.ensure_token(shared.token_path())
         async with websockets.connect(
             f"ws://{self.host}:{self.port}/",
