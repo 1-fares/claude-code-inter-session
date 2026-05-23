@@ -46,23 +46,25 @@ against the server's `messages.log` (list, short round-trip,
 file-pointer delivery, 61-vs-632-byte contrast, destructive-request
 guardrail returning `question:`).
 
-Caveats from that run:
+A second run (fresh paths, novel content) closed the two earlier gaps,
+both wire-verified against `messages.log`:
 
-- The file-pointer test was confounded by pre-existing `/tmp/is-demo`
-  artifacts: the receiver ran an existing `sieve.py` rather than creating
-  it from the spec. Delivery itself was still proven.
-- **Log-recovery is unverified.** When a long message is sent inline and
-  truncated, the receiver is supposed to fetch the full body from
-  `messages.log` via the `cont` pointer. In the run the receiver instead
-  recognized a repeat and replied from memory, so this path has not
-  actually been exercised.
-- Resending a task inline re-triggers execution; idempotency is the
-  sender's responsibility.
+- **File-pointer from scratch:** in a freshly emptied dir the receiver
+  created `/tmp/is-fresh/factorial.py` + `out.txt` from the spec and
+  replied `done: 720`.
+- **Log-recovery verified:** a 584-byte inline message with its
+  actionable instruction at byte 547 (past the 400 cap, so clipped from
+  the notification); the receiver replied `done: 54`, obtainable only by
+  fetching the full body from `messages.log`.
+
+Note: resending a task inline re-triggers execution; idempotency is the
+sender's responsibility.
 
 ## Open items
 
-- Verify log-recovery with novel >400-char inline content whose
-  actionable instruction sits past the cap.
+- Core behavior is fully validated (push delivery, file-pointer from
+  scratch, truncation log-recovery, safety guardrail). No functional gaps
+  open.
 - Optional: version bump; squash the multi-part commit and its revert for
   a cleaner history.
 
