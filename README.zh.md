@@ -219,7 +219,6 @@ blue → "tracked in PATCH_LOG.md (24 entries). all classes hardened.
 - Bearer token 存放于 `~/.claude/data/inter-session/token`(权限 `0600`，目录 `0700`)。
 - 任何以同一 Unix 用户身份运行的进程都可以读取该 token 并连接。对于单用户、单机场景这是可接受的。
 - 该 token **不能**防御以你身份运行的恶意代码。如果你不信任本机代码，不要启用 inter-session。
-- **有意为之的单用户放宽**:两项同 UID 防护被刻意关闭。(1) control 连接不再校验 nonce,因此任意本机进程都可代表任意会话操作。(2) 客户端在发送 token 前不再校验服务器身份。两者都以「你是本机唯一且可信的用户」为前提,用同 UID 冒充防护、端口抢占防护换取简洁。若要改为多用户或非 localhost,请恢复这两项(见 CLAUDE.md "Trust model")。
 - 接收方 agent 的反应策略(见 [SKILL.md](./skills/inter-session/SKILL.md))把对端消息当作指令处理，但与对待用户输入一样保持谨慎 —— 破坏性操作需要消息中包含明确肯定的内容；含义不清的请求会先发 `question:` 询问。
 
 ## 限制

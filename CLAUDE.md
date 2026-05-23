@@ -102,39 +102,6 @@ paths, validation, sanitizer, atomic bearer-token, identity helpers.
 
 ## Non-obvious invariants (read before changing the affected code)
 
-### Trust model (single-user)
-
-This is a single-user, single-machine tool, and two same-UID guards were
-**deliberately removed** as conscious decisions (not oversights):
-
-1. **Control ownership (per-session `nonce`) is not verified.** A
-   `role=control` connection (send/list) only has to name a live `for_session`
-   that exists in the registry; it no longer has to prove ownership via that
-   session's `nonce`. Any local process may act as control for any registered
-   session. (`bin/server.py`, control branch of the hello handler.)
-2. **Server identity is not verified before sending the token.** Clients and
-   helpers connect to whatever holds the port and send the bearer token
-   without the pidfile/cmdline check. (`bin/{client,send,list}.py`.)
-
-What this gives up: defense against *other code running as the same user*
-(a sibling process, an npm postinstall, an editor extension) impersonating a
-session's control channel, and defense against a coincidental localhost
-port-squatter receiving the token. The accepted rationale: the operator is the
-sole user of the machine and trusts local code. This also means a
-prompt-injected session is no longer contained from acting as a peer; that
-risk is accepted for this setup.
-
-Still in place: the bearer **token** (same-UID file gate), the **agent
-reconnect-replace `nonce`** check (a process can't reconnect with an existing
-session_id and a wrong nonce to kick/impersonate a live agent), the
-**self-send** guard, and all size/rate limits. `verify_server_identity` /
-`write_server_identity` remain as helpers (the `.meta` companion is still
-written for discovery/election) but the client-side verification gate is gone.
-
-If you ever make this multi-user or expose it beyond localhost, restore both
-guards (re-add the control-nonce check and re-wire the
-`verify_server_identity` gate in `bin/{client,send,list}.py`).
-
 ### Race-free server election (`bin/spawn.py` + `bin/server.py --fd`)
 
 The election is `bind()`-atomic: whoever wins spawns the server via
@@ -148,13 +115,11 @@ port for ~30 s).
 
 ### Server identity verification (`bin/shared.py::verify_server_identity`)
 
-`verify_server_identity` reads the pidfile's `.meta` companion and checks
-pid + cmdline + host + port. It still exists and is unit-tested, but the
-**client-side gate that called it before sending the token was removed** as a
-conscious single-user decision (see [Trust model](#trust-model-single-user)).
-Clients/helpers now send the token to whatever holds the port. The `.meta`
-companion is still written (`write_server_identity`) because discovery and
-election use the pidfile.
+Before any client or helper sends the bearer token, it verifies the
+server process identity by reading the pidfile's `.meta` companion and
+checking pid + cmdline + host + port. Refuses on mismatch. This is
+defense-in-depth against a coincidental localhost port squatter
+receiving the token.
 
 ### userConfig is delivered via env vars, NOT `${user_config.*}` substitution
 
@@ -172,12 +137,10 @@ user's plugin config. Regression test:
 
 `role=agent` (client.py, long-lived) appears in `list` and receives
 `msg` events. `role=control` (send.py, list.py, ephemeral) does NOT
-appear in `list`. Control connections include `for_session`; the server
-requires it to name a live registered agent (for routing and from_id) but
-**no longer cross-checks the `nonce`** (see
-[Trust model](#trust-model-single-user)). send.py/list.py still send the
-nonce from their discovered state, the server just doesn't verify it, so any
-local process can act as control for any session.
+appear in `list`. Control connections must include `for_session` +
+`nonce` matching their owning listener's state file; the server
+cross-checks. This blocks impersonation by sibling processes that share
+a parent.
 
 ### ASCII `name` vs Unicode `label`
 

@@ -59,8 +59,10 @@ async def _run(args) -> int:
     for_session = state["session_id"]
     nonce = state["nonce"]
 
-    # Server-identity verification intentionally disabled (single-user trust
-    # model; see CLAUDE.md "Trust model (single-user)").
+    if not shared.verify_server_identity(host, port):
+        print(f"server identity check failed ({host}:{port} not held by bin/server.py)",
+              file=sys.stderr)
+        return 1
 
     try:
         ws = await websockets.connect(
