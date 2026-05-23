@@ -24,13 +24,13 @@ class TestSubcommands:
         # `/inter-session` prefix (the prefix depends on plugin vs standalone
         # install, so it's not hardcoded into each row).
         for sub in ("connect", "install-deps", "list", "send", "broadcast",
-                    "rename", "status", "disconnect"):
+                    "rename", "status", "disconnect", "help"):
             assert f"`{sub}" in SKILL
 
     def test_dispatch_table_has_short_aliases(self):
-        # Short aliases (c/l/s/b/r/st/d) must stay documented so the terse
+        # Short aliases (c/l/s/b/r/st/d/h) must stay documented so the terse
         # invocation forms keep working.
-        for alias in ("`c`", "`l`", "`s`", "`b`", "`r`", "`st`", "`d`"):
+        for alias in ("`c`", "`l`", "`s`", "`b`", "`r`", "`st`", "`d`", "`h`"):
             assert alias in SKILL
 
 

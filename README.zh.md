@@ -204,6 +204,7 @@ blue → "tracked in PATCH_LOG.md (24 entries). all classes hardened.
 | `/is status`                       | `/is st`       | 启发式连接状态。                                                   |
 | `/is disconnect`                   | `/is d`        | 停止 monitor。                                                     |
 | `/is auto-start [on\|off\|status]` | —              | 切换 auto-start(仅插件安装)。`on` = 每次会话启动时连接；`off` = 懒启动(默认)。改动后用 `/reload-plugins` 应用。 |
+| `/is help`                         | `/is h`        | 列出所有子命令及其作用。                                           |
 
 ## 插件配置
 

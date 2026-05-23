@@ -124,11 +124,13 @@ short forms are equivalent (e.g. `send` == `s`):
 | `install-deps`                   | —     | Install runtime deps (websockets, psutil) with user confirmation. |
 | `list`                           | `l`   | Show connected sessions.                                          |
 | `send <name-or-prefix> <text>`   | `s`   | Send to one peer.                                                 |
+| `send <name> --file <path>`      | —     | Send a file pointer; the peer reads the file (use for long content). |
 | `broadcast <text>`               | `b`   | Send to all other peers (≤ 256 KB).                               |
 | `rename <new-name>`              | `r`   | Disconnect and reconnect with the new name.                       |
 | `status`                         | `st`  | Show this session's connection state.                             |
 | `disconnect`                     | `d`   | TaskStop the running monitor.                                     |
 | `auto-start [on\|off\|status]`   | —     | Toggle plugin auto-start (plugin install only; edits `monitors.json`). |
+| `help`                           | `h`   | List the subcommands (long + short) and what they do.            |
 
 Examples (standalone install as `is`): `/is c auth-refactor`,
 `/is s planner 'done: tests pass'`, `/is l`, `/is b 'pausing 20 min'`.
@@ -285,6 +287,16 @@ Find the monitor-task-id via `TaskList()`.
 
 Call `TaskList()`, find the task whose description is `"inter-session messages"`,
 then `TaskStop(<id>)`.
+
+## help
+
+When the user runs `help` (or `h`), print the **Subcommands** table above —
+each subcommand with its short alias and one-line description. Add two
+notes: `send` accepts `--file <path>` to deliver a file pointer (preferred
+for long content, see *Sending long content*); and the slash prefix is
+`/is` for a standalone-skill install or `/inter-session:inter-session` for
+a plugin install. This is informational only — do not run any Bash or
+Monitor command for `help`, just render the table.
 
 ## auto-start — toggle plugin auto-start mode
 

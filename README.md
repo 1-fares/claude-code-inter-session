@@ -276,6 +276,7 @@ for the plugin. Every subcommand has a short alias, so `/is send …` and
 | `/is status`                       | `/is st`       | Heuristic connection state.                                  |
 | `/is disconnect`                   | `/is d`        | Stop the monitor.                                            |
 | `/is auto-start [on\|off\|status]` | —              | Toggle auto-start (plugin install only). `on` = every session; `off` = lazy (default). Apply with `/reload-plugins`. |
+| `/is help`                         | `/is h`        | List the subcommands and what they do.                      |
 
 ## Plugin configuration
 
