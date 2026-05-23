@@ -20,9 +20,18 @@ class TestFrontmatter:
 
 class TestSubcommands:
     def test_dispatch_table_has_all_subcommands(self):
+        # Install-agnostic: the dispatch table lists the verbs without the
+        # `/inter-session` prefix (the prefix depends on plugin vs standalone
+        # install, so it's not hardcoded into each row).
         for sub in ("connect", "install-deps", "list", "send", "broadcast",
                     "rename", "status", "disconnect"):
-            assert f"`/inter-session {sub}" in SKILL or f"`/inter-session [args]" in SKILL
+            assert f"`{sub}" in SKILL
+
+    def test_dispatch_table_has_short_aliases(self):
+        # Short aliases (c/l/s/b/r/st/d) must stay documented so the terse
+        # invocation forms keep working.
+        for alias in ("`c`", "`l`", "`s`", "`b`", "`r`", "`st`", "`d`"):
+            assert alias in SKILL
 
 
 class TestReactionPolicy:

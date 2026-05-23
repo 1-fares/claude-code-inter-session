@@ -104,20 +104,34 @@ Your reply:
 
 ## Subcommands
 
-When the user invokes `/inter-session [args]`, parse `args` to dispatch:
+The slash trigger depends on how the skill is installed:
 
-| User input                                    | Action                                                            |
-| :-------------------------------------------- | :---------------------------------------------------------------- |
-| `/inter-session [connect]` (no name)          | Connect; auto-named (see connect section).                        |
-| `/inter-session connect <name>`               | Connect with the given ASCII name.                                |
-| `/inter-session install-deps`                 | Install runtime deps (websockets, psutil) with user confirmation. |
-| `/inter-session list`                         | Show connected sessions.                                          |
-| `/inter-session send <name-or-prefix> <text>` | Send to one peer.                                                 |
-| `/inter-session broadcast <text>`             | Send to all other peers (≤ 256 KB).                               |
-| `/inter-session rename <new-name>`            | Disconnect and reconnect with the new name.                       |
-| `/inter-session status`                       | Show this session's connection state.                             |
-| `/inter-session disconnect`                   | TaskStop the running monitor.                                     |
-| `/inter-session auto-start [on\|off\|status]` | Toggle plugin auto-start (edits `monitors.json` `when` field).    |
+- **Standalone skill** (`~/.claude/skills/<dir>/`): typed `/<dir> [args]`.
+  The trigger is the install **directory name**, not the frontmatter
+  `name`, so installing under a short dir gives a short command. The
+  recommended install symlinks the skill dir as `is`, so every example
+  below is typed `/is …` (e.g. `/is send <name> <text>`).
+- **Plugin** (`/plugin install`): typed `/inter-session:inter-session
+  [args]` (plugin namespace + skill name).
+
+Parse `args` to dispatch. Each subcommand has a short alias; the long and
+short forms are equivalent (e.g. `send` == `s`):
+
+| Subcommand                       | Alias | Action                                                            |
+| :------------------------------- | :---- | :---------------------------------------------------------------- |
+| `[connect] [<name>]` (no name)   | `c`   | Connect; auto-named if no name (see connect section).             |
+| `connect <name>`                 | `c`   | Connect with the given ASCII name.                                |
+| `install-deps`                   | —     | Install runtime deps (websockets, psutil) with user confirmation. |
+| `list`                           | `l`   | Show connected sessions.                                          |
+| `send <name-or-prefix> <text>`   | `s`   | Send to one peer.                                                 |
+| `broadcast <text>`               | `b`   | Send to all other peers (≤ 256 KB).                               |
+| `rename <new-name>`              | `r`   | Disconnect and reconnect with the new name.                       |
+| `status`                         | `st`  | Show this session's connection state.                             |
+| `disconnect`                     | `d`   | TaskStop the running monitor.                                     |
+| `auto-start [on\|off\|status]`   | —     | Toggle plugin auto-start (plugin install only; edits `monitors.json`). |
+
+Examples (standalone install as `is`): `/is c auth-refactor`,
+`/is s planner 'done: tests pass'`, `/is l`, `/is b 'pausing 20 min'`.
 
 ## connect — start the monitor
 
@@ -287,22 +301,43 @@ surface this to the user after running.
 user first invokes any `/inter-session` command in a session). The
 default for fresh installs is `off` (lazy).
 
-## Truncated messages
+## Multi-part and truncated messages
 
-Long messages (whose body exceeds the ~400-char stdout cap) arrive in
-two lines:
+Claude Code clips each monitor notification at ~512 chars, so a message
+body is delivered in one of three shapes depending on length:
 
-```
-[inter-session msg=q7r8 from="data-pipe" truncated=2097152] <first ~400 chars of text>
-[inter-session msg=q7r8 cont] full text 2.0 MB at ~/.claude/data/inter-session/messages.log
-```
+1. **Short** (fits one line): a single notification, no `part` marker.
+2. **Medium** (above the single-line cap, within the inline-parts
+   budget): split across several `part=i/N` lines that together carry the
+   **full** text. Reassemble them in order — the bodies concatenate with
+   no separator:
 
-The full payload is in `~/.claude/data/inter-session/messages.log` as a
-JSONL record. Fetch it with:
+   ```
+   [inter-session msg=q7r8 from="planner" part=1/3] <first chunk>
+   [inter-session msg=q7r8 from="planner" part=2/3] <second chunk>
+   [inter-session msg=q7r8 from="planner" part=3/3] <final chunk>
+   ```
 
-```
-Bash("grep -F '<msg_id>' ~/.claude/data/inter-session/messages.log | tail -1")
-```
+   Same `msg=<id>`, ascending `part=i/N`. Treat the joined text as one
+   message and apply the Reaction policy to it as a whole.
+3. **Oversized** (beyond the inline-parts budget, e.g. multi-KB/MB): a
+   single truncated line plus a cont-pointer, so a huge payload can't
+   flood context with thousands of lines:
+
+   ```
+   [inter-session msg=q7r8 from="data-pipe" truncated=2097152] <first ~400 chars>
+   [inter-session msg=q7r8 cont] full text 2.0 MB at ~/.claude/data/inter-session/messages.log
+   ```
+
+   Fetch the full payload (JSONL record) from the log:
+
+   ```
+   Bash("grep -F '<msg_id>' ~/.claude/data/inter-session/messages.log | tail -1")
+   ```
+
+The inline-parts budget is `PART_BODY_CAP * MAX_INLINE_PARTS` in
+`shared.py`. The full payload is always preserved verbatim in
+`messages.log` regardless of which shape was delivered.
 
 ## Error notifications
 

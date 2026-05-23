@@ -2,18 +2,18 @@
   "name": "inter-session",
   "description": "Single-plugin marketplace for inter-session: agent-to-agent messaging for Claude Code sessions on the same machine.",
   "owner": {
-    "name": "Yilun Zhang",
-    "url": "https://github.com/yilunzhang"
+    "name": "1-fares",
+    "url": "https://github.com/1-fares"
   },
   "plugins": [
     {
       "name": "inter-session",
       "description": "Inter-agent messaging for Claude Code sessions on the same machine.",
       "source": "./",
-      "version": "0.1.2",
+      "version": "0.2.0",
       "category": "productivity",
       "tags": ["messaging", "agents", "automation"],
-      "homepage": "https://github.com/yilunzhang/claude-code-inter-session",
+      "homepage": "https://github.com/1-fares/claude-code-inter-session",
       "license": "MIT"
     }
   ]

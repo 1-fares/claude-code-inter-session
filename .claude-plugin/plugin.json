@@ -1,6 +1,6 @@
 {
   "name": "inter-session",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Inter-agent messaging for Claude Code sessions on the same machine.",
   "monitors": "./monitors/monitors.json",
   "userConfig": {

@@ -157,12 +157,19 @@ by name; labels are display-only. Don't try to address by label.
 | WebSocket frame                | 16 MB                                       |
 | Direct `text` length           | 10 MB (server-enforced)                     |
 | Broadcast `text` length        | 256 KB (server-enforced)                    |
-| Stdout notification body       | 400 chars (issue #2: Claude Code clips each monitor notification at ~512 chars total, so the body cap is sized to leave room for our prefix) |
+| Stdout notification body       | `STDOUT_CAP` = 400 chars per line (issue #2: Claude Code clips each monitor notification at ~512 chars total, so the body cap leaves room for our prefix) |
+| Inline multi-part budget       | `PART_BODY_CAP` (360) × `MAX_INLINE_PARTS` (4) = 1440 chars delivered in full across `part=i/N` lines |
 
-Direct messages whose body exceeds the stdout cap display as a truncated
-first-line and a `cont` line pointing to `messages.log` so the receiver
-can fetch the full payload via `grep -F <msg_id>`. Truncated content is
-preserved in full in `messages.log` regardless.
+Message bodies are delivered over stdout in three shapes by length
+(`shared.chunk_for_stdout`): **short** bodies (≤ `STDOUT_CAP`) are one
+line; **medium** bodies (≤ `PART_BODY_CAP * MAX_INLINE_PARTS`) are split
+into `part=i/N` lines that carry the full text with no log round-trip;
+**oversized** bodies fall back to a single truncated first-line plus a
+`cont` line pointing to `messages.log` (the bound stops a multi-KB/MB
+payload from flooding the receiver with thousands of part lines). Full
+content is preserved verbatim in `messages.log` regardless of shape.
+`PART_BODY_CAP` sits below `STDOUT_CAP` to leave room for the longer
+`part=i/N` prefix under the ~512 clip.
 
 ### Reaction policy lives in `SKILL.md`
 

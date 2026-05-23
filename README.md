@@ -67,26 +67,44 @@ natural fit — your existing sessions become the team.
 
 ## Install
 
-In any Claude Code session:
+For one user on one machine, install as a **standalone skill** — it gives
+the shortest command. The skill's slash trigger is its install
+**directory name**, so symlinking the skill dir as `is` makes the command
+`/is`:
+
+```bash
+git clone git@github.com:1-fares/claude-code-inter-session.git
+ln -s "$PWD/claude-code-inter-session/skills/inter-session" ~/.claude/skills/is
+```
+
+Then, in any Claude Code session:
 
 ```
-/plugin marketplace add https://github.com/yilunzhang/claude-code-inter-session
-/plugin install inter-session
-```
-
-Then start using it:
-
-```
-/inter-session:inter-session
+/is
 ```
 
 Claude handles runtime dependency install automatically on first use — no
 extra setup needed.
 
-By default the monitor starts **lazily** — it spins up the first time
-you invoke any `/inter-session:inter-session` command in a given Claude
-Code session. To switch to always-on auto-start at every session open,
-run `/inter-session:inter-session auto-start on` (then `/reload-plugins`).
+<details>
+<summary>Alternative: install as a plugin</summary>
+
+The plugin adds a config UI (port, idle-shutdown) and marketplace-style
+updates, at the cost of a longer, namespaced command
+(`/inter-session:inter-session …`). The repo is private, so this requires
+git access to it:
+
+```
+/plugin marketplace add https://github.com/1-fares/claude-code-inter-session
+/plugin install inter-session
+```
+
+In plugin mode the monitor starts **lazily** — it spins up the first time
+you invoke any `/inter-session:inter-session` command in a session. Switch
+to always-on with `/inter-session:inter-session auto-start on` (then
+`/reload-plugins`).
+
+</details>
 
 ## Examples
 
@@ -105,13 +123,13 @@ Two Claude Code sessions, each in a different project.
 
 **Session A** (in `~/proj/auth`):
 ```
-/inter-session:inter-session
+/is
 → Connecting as `auth-refactor`…
 ```
 
 **Session B** (in `~/proj/payments`):
 ```
-/inter-session:inter-session
+/is
 → Connecting as `payments-debug`…
 ```
 
@@ -235,17 +253,22 @@ collaboration.
 
 ## Slash commands
 
-| Command                                                        | What it does                                                   |
-| :------------------------------------------------------------- | :------------------------------------------------------------- |
-| `/inter-session:inter-session`                                 | Connect (alias for `connect`).                                 |
-| `/inter-session:inter-session connect [name]`                  | Connect to the bus; `name` proposed from context if omitted.   |
-| `/inter-session:inter-session list`                            | List connected sessions.                                       |
-| `/inter-session:inter-session send <name> <text>`              | Send a message to one session.                                 |
-| `/inter-session:inter-session broadcast <text>`                | Send to all other sessions (≤ 256 KB).                         |
-| `/inter-session:inter-session rename <new-name>`               | Rename — implemented as disconnect + reconnect.                |
-| `/inter-session:inter-session status`                          | Heuristic connection state.                                    |
-| `/inter-session:inter-session disconnect`                      | Stop the monitor.                                              |
-| `/inter-session:inter-session auto-start [on\|off\|status]`    | Toggle auto-start. `on` = start at every session; `off` = lazy (default). Apply with `/reload-plugins`. |
+The command prefix depends on the install: `/is` for the recommended
+standalone skill (the examples below), or `/inter-session:inter-session`
+for the plugin. Every subcommand has a short alias, so `/is send …` and
+`/is s …` are equivalent.
+
+| Command                            | Short          | What it does                                                  |
+| :--------------------------------- | :------------- | :----------------------------------------------------------- |
+| `/is`                              | —              | Connect (alias for `connect`).                               |
+| `/is connect [name]`               | `/is c [name]` | Connect to the bus; `name` proposed from context if omitted. |
+| `/is list`                         | `/is l`        | List connected sessions.                                     |
+| `/is send <name> <text>`           | `/is s …`      | Send a message to one session.                              |
+| `/is broadcast <text>`             | `/is b …`      | Send to all other sessions (≤ 256 KB).                       |
+| `/is rename <new-name>`            | `/is r …`      | Rename — implemented as disconnect + reconnect.              |
+| `/is status`                       | `/is st`       | Heuristic connection state.                                  |
+| `/is disconnect`                   | `/is d`        | Stop the monitor.                                            |
+| `/is auto-start [on\|off\|status]` | —              | Toggle auto-start (plugin install only). `on` = every session; `off` = lazy (default). Apply with `/reload-plugins`. |
 
 ## Plugin configuration
 
@@ -277,10 +300,11 @@ The WebSocket port and idle-shutdown timeout are configurable via
 - WebSocket frame size: 16 MB.
 - Direct `text` length: 10 MB.
 - Broadcast `text` length: 256 KB.
-- Stdout notification body: 400 chars (Claude Code clips monitor
-  notifications at ~512 chars total; the cap leaves room for our
-  prefix). Above this, the receiver sees a truncated first line plus
-  a `cont` pointer line to `~/.claude/data/inter-session/messages.log`,
+- Stdout notification body: 400 chars per line (Claude Code clips monitor
+  notifications at ~512 chars total; the cap leaves room for our prefix).
+  Longer messages are delivered in full across up to four `part=i/N` lines
+  (≈1440 chars). Beyond that budget, the receiver sees a truncated first
+  line plus a `cont` pointer to `~/.claude/data/inter-session/messages.log`,
   where the full payload is always preserved.
 - Broadcast rate: 60 / minute / session.
 
