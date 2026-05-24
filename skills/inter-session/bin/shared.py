@@ -99,6 +99,17 @@ def pidfile_meta_path(port: int = DEFAULT_PORT, host: str | None = None) -> Path
     return data_dir() / f"{_identity_stem(port, host)}.pid.meta"
 
 
+def election_lock_path(port: int = DEFAULT_PORT, host: str | None = None) -> Path:
+    """Cross-process lock taken before bind+spawn in `ensure_server_running`.
+
+    Without this, SO_REUSEADDR lets two concurrent peers both bind during
+    the window between the first `bind()` and the spawned server's
+    `listen()`. Both then spawn server.py and the loser crashes with
+    EADDRINUSE on `listen()`. The flock serializes the election so only
+    one peer at a time is in the bind-and-spawn path."""
+    return data_dir() / f"{_identity_stem(port, host)}.election.lock"
+
+
 def clients_dir() -> Path:
     return data_dir() / "clients"
 
