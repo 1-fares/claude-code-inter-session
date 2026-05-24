@@ -165,6 +165,8 @@ class Client:
         ppid: Optional[int] = None,
         verbose: bool = False,
         max_collision_retries: int = 3,
+        owner_pid: Optional[int] = None,
+        owner_check_interval_s: float = 10.0,
     ):
         self.port = port
         self.host = host
@@ -180,6 +182,15 @@ class Client:
         self._max_collision_retries = max_collision_retries
         self._collision_retries = 0
         self._connect_task: Optional[asyncio.Task] = None
+        # Owner-liveness watch: the pid of the Claude Code session that
+        # owns this listener. If that pid disappears (window closed, CC
+        # crash) the monitor has no useful work to do — its stdout has no
+        # reader — so exit cleanly and let the server reap the socket.
+        # `-1` (or any non-positive value) disables the watch; that's the
+        # behaviour outside a real CC environment (tests, manual runs).
+        self.owner_pid = owner_pid if owner_pid is not None else shared.find_cc_ancestor_pid()
+        self.owner_check_interval_s = owner_check_interval_s
+        self._owner_watch_task: Optional[asyncio.Task] = None
 
     def stop(self) -> None:
         self._stop.set()
@@ -206,6 +217,9 @@ class Client:
         # Best-effort: delete state file on graceful exit so helpers don't
         # see a stale entry pointing at our dead session_id.
         atexit.register(_delete_session_state, self.ppid)
+
+        if self.owner_pid > 0 and self.owner_check_interval_s > 0:
+            self._owner_watch_task = asyncio.create_task(self._owner_watch_loop())
 
         try:
             backoff = shared.RECONNECT_BACKOFF_MIN_S
@@ -240,11 +254,55 @@ class Client:
                 backoff = min(backoff * 2, shared.RECONNECT_BACKOFF_MAX_S)
             return 0
         finally:
+            if self._owner_watch_task is not None and not self._owner_watch_task.done():
+                self._owner_watch_task.cancel()
             if self._lock_fd is not None:
                 try:
                     os.close(self._lock_fd)
                 except OSError:
                     pass
+
+    async def _owner_watch_loop(self) -> None:
+        """Exit the monitor when the owning CC session disappears.
+
+        Without this, closing the WSL/terminal window leaves the python
+        listener running indefinitely: bash wrapper was launched under
+        `start_new_session=True`, so it survives the tty's SIGHUP; its
+        python child therefore also survives, with its websocket and
+        ping loop still alive. The server cannot tell this orphan from
+        a healthy peer on the wire (the orphan-reap in #1's Layer C is
+        gated on `pid gone or zombie`, which an orphaned-but-alive
+        process does not satisfy). Watching the *owning CC session* pid
+        (the one we already resolve as the listener_key) is the right
+        signal: when that pid disappears, the monitor has no useful
+        work to do (its stdout has no reader) and should exit.
+
+        Polling cadence is bounded; one psutil.pid_exists per cycle is
+        cheap and same-UID. Any unexpected exception is logged and
+        swallowed so a transient probe failure can't kill the loop.
+        """
+        try:
+            import psutil
+        except ImportError:
+            return
+        while not self._stop.is_set():
+            try:
+                await asyncio.sleep(self.owner_check_interval_s)
+            except asyncio.CancelledError:
+                return
+            if self._stop.is_set():
+                return
+            try:
+                if not psutil.pid_exists(self.owner_pid):
+                    _print_line(
+                        f"[inter-session] owning CC session (pid {self.owner_pid}) "
+                        f"is gone; exiting"
+                    )
+                    self.stop()
+                    return
+            except Exception:
+                log.exception("owner-watch: unexpected error")
+                continue
 
     async def _connect_and_serve(self) -> None:
         # Defense-in-depth against port squatting: refuse to send the bearer
@@ -422,10 +480,21 @@ def main() -> int:
                 f"from cwd (rename with /inter-session rename)"
             )
 
+    # Owner-watch knobs (optional). `INTER_SESSION_OWNER_PID` overrides the
+    # auto-resolved CC ancestor pid (used by tests; also an escape hatch).
+    # `INTER_SESSION_OWNER_CHECK_INTERVAL_S` tunes the poll cadence.
+    owner_pid_env = _env_int("INTER_SESSION_OWNER_PID", default=0)
+    owner_interval = _env_float(
+        "INTER_SESSION_OWNER_CHECK_INTERVAL_S", default=10.0,
+    )
+    owner_pid_kw = owner_pid_env if owner_pid_env else None
+
     client = Client(
         host=args.host, port=args.port, name=final_name, label=args.label,
         idle_shutdown_minutes=args.idle_shutdown_minutes,
         verbose=args.verbose,
+        owner_pid=owner_pid_kw,
+        owner_check_interval_s=owner_interval,
     )
 
     loop = asyncio.new_event_loop()
