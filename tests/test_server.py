@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
+import sys
 import uuid
 
 import pytest
@@ -103,8 +106,12 @@ class TestServerIdentityOrdering:
             await asyncio.wait_for(task, timeout=2.0)
 
 
-async def _hello(ws, token, name="alpha", label="", role=shared.Role.AGENT, session_id=None, **extra):
+async def _hello(ws, token, name="alpha", label="", role=shared.Role.AGENT, session_id=None, pid=None, **extra):
     sid = session_id or str(uuid.uuid4())
+    # Default to our own pid so the orphan-reap loop (Layer C) sees a live
+    # process for the registration and doesn't evict the agent mid-test.
+    # Tests that want to exercise dead-pid behavior pass an explicit pid.
+    real_pid = pid if pid is not None else os.getpid()
     await _send_op(
         ws,
         "hello",
@@ -112,7 +119,7 @@ async def _hello(ws, token, name="alpha", label="", role=shared.Role.AGENT, sess
         name=name,
         label=label,
         cwd="/tmp",
-        pid=12345,
+        pid=real_pid,
         role=role.value if isinstance(role, shared.Role) else role,
         token=token,
         **extra,
@@ -990,3 +997,287 @@ class TestPeerEvents:
             assert left["session_id"] == sid_b
         finally:
             await ws_a.close()
+
+
+class TestForceDisconnect:
+    """Layer A: the control-role `force_disconnect` op frees the listener's
+    name on the bus immediately and closes the listener's ws with the
+    application close code so the python exits its reconnect loop."""
+
+    async def test_force_disconnect_evicts_listener_and_closes_with_4001(
+        self, running_server,
+    ):
+        srv, port, token = running_server
+        sid = str(uuid.uuid4())
+        nonce = "fd-nonce-1"
+        ws_listener = await _connect(port)
+        await _send_op(
+            ws_listener, "hello",
+            session_id=sid, name="alpha", label="",
+            cwd="/tmp", pid=1, role="agent",
+            nonce=nonce, token=token,
+        )
+        await _recv(ws_listener)  # welcome
+        ws_ctrl = await _connect(port)
+        await _send_op(
+            ws_ctrl, "hello",
+            session_id=str(uuid.uuid4()), name="", label="",
+            cwd="/tmp", pid=2, role="control",
+            for_session=sid, nonce=nonce, token=token,
+        )
+        await _recv(ws_ctrl)  # welcome
+        ws_watcher = await _connect(port)
+        await _hello(ws_watcher, token, name="watcher")
+        try:
+            # Drain join chatter on watcher.
+            for _ in range(2):
+                try:
+                    await _recv(ws_watcher, timeout=0.3)
+                except asyncio.TimeoutError:
+                    break
+            await _send_op(ws_ctrl, "force_disconnect")
+            ack = await _recv_until(ws_ctrl, "force_disconnect_ok")
+            assert ack["session_id"] == sid
+            assert ack["was_present"] is True
+            # watcher receives peer_left for the listener.
+            ev = await _recv_until(ws_watcher, "peer_left")
+            assert ev["session_id"] == sid
+            # Listener's ws is closed with the application-defined code.
+            # Drain any queued peer-event frames until the close arrives.
+            close_code = None
+            try:
+                deadline = asyncio.get_event_loop().time() + 2.0
+                while True:
+                    remaining = deadline - asyncio.get_event_loop().time()
+                    if remaining <= 0:
+                        pytest.fail("listener ws was not closed in time")
+                    await asyncio.wait_for(ws_listener.recv(), timeout=remaining)
+            except websockets.ConnectionClosed:
+                close_code = getattr(ws_listener, "close_code", None)
+            assert close_code == shared.CLOSE_CODE_FORCE_DISCONNECT
+            # Name is free server-side immediately — a new agent can claim it.
+            ws_new = await _connect(port)
+            try:
+                _, welcome = await _hello(ws_new, token, name="alpha")
+                assert welcome["op"] == "welcome"
+            finally:
+                await ws_new.close()
+        finally:
+            await ws_listener.close()
+            await ws_ctrl.close()
+            await ws_watcher.close()
+
+    async def test_force_disconnect_idempotent_when_listener_gone(
+        self, running_server,
+    ):
+        srv, port, token = running_server
+        sid = str(uuid.uuid4())
+        nonce = "fd-nonce-2"
+        ws_listener = await _connect(port)
+        await _send_op(
+            ws_listener, "hello",
+            session_id=sid, name="alpha", label="",
+            cwd="/tmp", pid=1, role="agent",
+            nonce=nonce, token=token,
+        )
+        await _recv(ws_listener)
+        ws_ctrl = await _connect(port)
+        await _send_op(
+            ws_ctrl, "hello",
+            session_id=str(uuid.uuid4()), name="", label="",
+            cwd="/tmp", pid=2, role="control",
+            for_session=sid, nonce=nonce, token=token,
+        )
+        await _recv(ws_ctrl)
+        try:
+            # Listener closes itself first.
+            await ws_listener.close()
+            await asyncio.sleep(0.3)
+            # Control's force_disconnect should still ack, just with
+            # was_present=False — caller's UX stays clean.
+            await _send_op(ws_ctrl, "force_disconnect")
+            ack = await _recv_until(ws_ctrl, "force_disconnect_ok")
+            assert ack["session_id"] == sid
+            assert ack["was_present"] is False
+        finally:
+            await ws_ctrl.close()
+
+    async def test_force_disconnect_rejected_from_agent_role(self, running_server):
+        srv, port, token = running_server
+        ws = await _connect(port)
+        try:
+            await _hello(ws, token, name="alpha")
+            await _send_op(ws, "force_disconnect")
+            err = await _recv_until(ws, "error")
+            assert err["code"] == shared.ErrorCode.UNKNOWN_OP
+        finally:
+            await ws.close()
+
+
+@pytest.fixture
+async def reap_server(tmp_data_dir, free_port, monkeypatch):
+    """Server with the orphan-reap loop running on a tight cadence so a
+    test can observe an eviction in under a second."""
+    monkeypatch.setenv("INTER_SESSION_REAP_INTERVAL_S", "0.1")
+    monkeypatch.setenv("INTER_SESSION_REAP_MISS_THRESHOLD", "2")
+    shared.secure_dir(tmp_data_dir)
+    token = shared.ensure_token(shared.token_path())
+    srv = Server(host="127.0.0.1", port=free_port, idle_shutdown_minutes=10)
+    task = asyncio.create_task(srv.serve())
+    await srv.wait_ready()
+    yield srv, free_port, token
+    srv.stop()
+    try:
+        await asyncio.wait_for(task, timeout=2.0)
+    except asyncio.TimeoutError:
+        task.cancel()
+
+
+class TestOrphanReap:
+    """Layer C: periodic safety net. An agent whose pid is gone (NoSuchProcess
+    or zombie) is evicted after REAP_MISS_THRESHOLD consecutive observations.
+    Healthy peers with live pids are not touched; PPid drift is NOT used as
+    a signal (would false-positive on legitimate reparenting)."""
+
+    async def test_reaps_agent_whose_pid_is_gone(self, reap_server):
+        srv, port, token = reap_server
+        # Spawn a throwaway helper process, register an agent with its pid,
+        # then kill the helper. The server's psutil check should then see
+        # NoSuchProcess for that pid.
+        helper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            ws_orphan = await _connect(port)
+            await _send_op(
+                ws_orphan, "hello",
+                session_id=str(uuid.uuid4()), name="orphan", label="",
+                cwd="/tmp", pid=helper.pid, role="agent",
+                nonce="orphan-nonce", token=token,
+            )
+            await _recv(ws_orphan)  # welcome
+            ws_watcher = await _connect(port)
+            await _hello(ws_watcher, token, name="watcher")
+            try:
+                # Drain peer_joined chatter on watcher.
+                for _ in range(2):
+                    try:
+                        await _recv(ws_watcher, timeout=0.3)
+                        continue
+                    except asyncio.TimeoutError:
+                        break
+                # Make the orphan an orphan: kill the helper.
+                helper.terminate()
+                helper.wait(timeout=2)
+                # Reap interval 0.1s, threshold 2: should evict within ~0.4s.
+                event = await _recv_until(ws_watcher, "peer_left", timeout=3.0)
+                assert event["op"] == "peer_left"
+                # The name is free server-side — a fresh agent can claim it.
+                ws_new = await _connect(port)
+                try:
+                    _, welcome = await _hello(ws_new, token, name="orphan")
+                    assert welcome["op"] == "welcome"
+                finally:
+                    await ws_new.close()
+            finally:
+                await ws_watcher.close()
+                try:
+                    await ws_orphan.close()
+                except Exception:
+                    pass
+        finally:
+            if helper.poll() is None:
+                helper.kill()
+
+    async def test_healthy_agent_with_live_pid_not_reaped(self, reap_server):
+        """Sanity: an agent registered with a pid that stays alive must
+        survive several reap cycles unscathed."""
+        srv, port, token = reap_server
+        ws_alive = await _connect(port)
+        # Use our own test process pid — it will outlive the test.
+        await _send_op(
+            ws_alive, "hello",
+            session_id=str(uuid.uuid4()), name="alive", label="",
+            cwd="/tmp", pid=os.getpid(), role="agent",
+            nonce="alive-nonce", token=token,
+        )
+        await _recv(ws_alive)
+        ws_watcher = await _connect(port)
+        await _hello(ws_watcher, token, name="watcher")
+        try:
+            # Drain peer_joined chatter.
+            for _ in range(2):
+                try:
+                    await _recv(ws_watcher, timeout=0.3)
+                    continue
+                except asyncio.TimeoutError:
+                    break
+            # Allow several reap cycles. No peer_left should arrive.
+            await asyncio.sleep(0.8)
+            try:
+                ev = await _recv(ws_watcher, timeout=0.3)
+                assert ev.get("op") != "peer_left", (
+                    f"alive peer was incorrectly reaped: {ev!r}"
+                )
+            except asyncio.TimeoutError:
+                pass  # silence is success here
+            # Confirm the alive agent is still registered via list.
+            await _send_op(ws_watcher, "list")
+            resp = await _recv_until(ws_watcher, "list_ok")
+            names = {s["name"] for s in resp["sessions"]}
+            assert "alive" in names
+        finally:
+            await ws_watcher.close()
+            await ws_alive.close()
+
+    async def test_reap_requires_threshold_consecutive_misses(
+        self, tmp_data_dir, free_port, monkeypatch,
+    ):
+        """A single transient miss must not evict — defends against
+        psutil/proc flakes mass-reaping the registry."""
+        monkeypatch.setenv("INTER_SESSION_REAP_INTERVAL_S", "0.1")
+        monkeypatch.setenv("INTER_SESSION_REAP_MISS_THRESHOLD", "5")
+        shared.secure_dir(tmp_data_dir)
+        token = shared.ensure_token(shared.token_path())
+        srv = Server(host="127.0.0.1", port=free_port, idle_shutdown_minutes=10)
+        task = asyncio.create_task(srv.serve())
+        await srv.wait_ready()
+        try:
+            # Register an agent with a definitely-dead pid (very high number,
+            # never assigned). The reaper will mark it on every iteration.
+            ws = await _connect(free_port)
+            await _send_op(
+                ws, "hello",
+                session_id=str(uuid.uuid4()), name="ghost", label="",
+                cwd="/tmp", pid=99999999, role="agent",
+                nonce="ghost-nonce", token=token,
+            )
+            await _recv(ws)
+            # After 2 reap cycles (~0.2s), counter is at 2 — well below
+            # threshold of 5 — so ghost must still be registered.
+            await asyncio.sleep(0.25)
+            ws_check = await _connect(free_port)
+            await _hello(ws_check, token, name="checker")
+            try:
+                # Drain joined chatter.
+                for _ in range(2):
+                    try:
+                        await _recv(ws_check, timeout=0.2)
+                    except asyncio.TimeoutError:
+                        break
+                await _send_op(ws_check, "list")
+                resp = await _recv_until(ws_check, "list_ok")
+                names = {s["name"] for s in resp["sessions"]}
+                assert "ghost" in names, (
+                    "single-miss eviction would mass-reap on transient glitches"
+                )
+            finally:
+                await ws_check.close()
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+        finally:
+            srv.stop()
+            try:
+                await asyncio.wait_for(task, timeout=2.0)
+            except asyncio.TimeoutError:
+                task.cancel()

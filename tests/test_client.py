@@ -414,6 +414,82 @@ class TestClientIntegration:
                     pass
 
 
+@pytest.mark.slow
+class TestForceDisconnectClientExits:
+    """Layer A client side: when the server closes our ws with
+    CLOSE_CODE_FORCE_DISCONNECT, the client must exit the run loop instead
+    of reconnecting. Otherwise an un-killed python recreates the ghost the
+    server just evicted."""
+
+    def test_client_exits_on_4001_does_not_reconnect(self, tmp_data_dir, free_port):
+        proc = _spawn_client(free_port, "alpha", tmp_data_dir, ppid_override=20001)
+        try:
+            # Wait for the client to be registered with the server.
+            time.sleep(1.5)
+
+            # Read the .session file to discover the listener's session_id + nonce
+            # (the control role needs them to authenticate).
+            state_path = shared.client_session_path(20001)
+            state = json.loads(state_path.read_text())
+            sid = state["session_id"]
+            nonce = state["nonce"]
+
+            # Drive a control connection that issues force_disconnect.
+            async def _drive() -> dict:
+                token = shared.ensure_token(shared.token_path())
+                ws = await websockets.connect(f"ws://127.0.0.1:{free_port}/",
+                                              max_size=shared.WS_FRAME_CAP)
+                try:
+                    await ws.send(json.dumps({
+                        "op": "hello",
+                        "session_id": str(uuid.uuid4()),
+                        "name": "", "label": "",
+                        "cwd": "/tmp", "pid": os.getpid(),
+                        "role": "control",
+                        "for_session": sid, "nonce": nonce, "token": token,
+                    }))
+                    await ws.recv()  # welcome
+                    await ws.send(json.dumps({"op": "force_disconnect"}))
+                    return json.loads(await ws.recv())
+                finally:
+                    await ws.close()
+
+            ack = asyncio.new_event_loop().run_until_complete(_drive())
+            assert ack.get("op") == "force_disconnect_ok"
+            assert ack.get("was_present") is True
+
+            # Client should exit on its own (without us sending any signal)
+            # because it received CLOSE_CODE_FORCE_DISCONNECT.
+            try:
+                rc = proc.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                pytest.fail(
+                    "client did not exit after force_disconnect; "
+                    "it likely reconnected, recreating the ghost"
+                )
+            assert rc == 0, f"client exited with non-zero rc={rc}"
+
+            # The 4001 path emits a user-visible exit notice on stdout.
+            out = proc.stdout.read() or ""
+            assert "force_disconnect" in out or "/is d" in out, (
+                f"expected force_disconnect notice on client stdout, got:\n{out!r}"
+            )
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+            pid_path = shared.pidfile_path(free_port)
+            if pid_path.exists():
+                try:
+                    pid = int(pid_path.read_text())
+                    os.kill(pid, 9)
+                except (OSError, ValueError):
+                    pass
+
+
 class TestPpidLock:
     def test_lock_acquired_then_released(self, tmp_data_dir):
         shared.secure_dir(shared.clients_dir())

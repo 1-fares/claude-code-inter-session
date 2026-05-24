@@ -380,29 +380,47 @@ class Client:
 
             ping_task = asyncio.create_task(self._ping_loop(ws))
             try:
-                async for raw in ws:
-                    try:
-                        payload = json.loads(raw)
-                    except json.JSONDecodeError:
-                        continue
-                    op = payload.get("op")
-                    if op == "msg":
-                        line = _format_msg(payload)
-                        _print_line(line)
-                        sanitized = shared.sanitize_for_stdout(payload.get("text", ""))
-                        truncated, was_truncated, full_len = shared.truncate_for_stdout(sanitized)
-                        if was_truncated:
-                            _print_line(_format_truncation_pointer(payload.get("msg_id", ""), full_len))
-                    elif op in ("peer_joined", "peer_left", "renamed"):
-                        if self.verbose:
-                            _print_line(f"[inter-session] {op}: {payload}")
-                    elif op == "pong":
-                        pass
-                    else:
-                        if self.verbose:
-                            _print_line(f"[inter-session] {op}: {payload}")
+                try:
+                    async for raw in ws:
+                        try:
+                            payload = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        op = payload.get("op")
+                        if op == "msg":
+                            line = _format_msg(payload)
+                            _print_line(line)
+                            sanitized = shared.sanitize_for_stdout(payload.get("text", ""))
+                            truncated, was_truncated, full_len = shared.truncate_for_stdout(sanitized)
+                            if was_truncated:
+                                _print_line(_format_truncation_pointer(payload.get("msg_id", ""), full_len))
+                        elif op in ("peer_joined", "peer_left", "renamed"):
+                            if self.verbose:
+                                _print_line(f"[inter-session] {op}: {payload}")
+                        elif op == "pong":
+                            pass
+                        else:
+                            if self.verbose:
+                                _print_line(f"[inter-session] {op}: {payload}")
+                except websockets.ConnectionClosed:
+                    # Server-initiated close (or peer reset). We need to look
+                    # at the close code below to decide whether to reconnect
+                    # or exit, so swallow the exception here rather than
+                    # letting it propagate to run()'s generic reconnect path.
+                    pass
             finally:
                 ping_task.cancel()
+            # The server closes our ws with CLOSE_CODE_FORCE_DISCONNECT when
+            # `/is d` (or the orphan-reap task) deregisters us. In that case
+            # we must NOT reconnect — otherwise an un-killed python would
+            # rejoin under the same name and recreate the ghost we just
+            # asked the server to evict. Set _stop so run()'s outer loop
+            # breaks instead of looping back into _connect_and_serve.
+            if getattr(ws, "close_code", None) == shared.CLOSE_CODE_FORCE_DISCONNECT:
+                _print_line(
+                    "[inter-session] disconnected by /is d (or orphan reap); exiting"
+                )
+                self._stop.set()
 
     async def _ping_loop(self, ws) -> None:
         while not self._stop.is_set():
