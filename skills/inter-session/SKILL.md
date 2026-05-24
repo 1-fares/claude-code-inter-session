@@ -119,8 +119,9 @@ short forms are equivalent (e.g. `send` == `s`):
 
 | Subcommand                       | Alias | Action                                                            |
 | :------------------------------- | :---- | :---------------------------------------------------------------- |
-| `[connect] [<name>]` (no name)   | `c`   | Connect; auto-named if no name (see connect section).             |
-| `connect <name>`                 | `c`   | Connect with the given ASCII name.                                |
+| *(no args)*                      | —     | Connect; auto-named from cwd (see connect section).               |
+| `connect [<name>]`               | `c`   | Connect, with optional name.                                      |
+| `<name>` (any first arg that is not a known subcommand or alias) | — | Shorthand for `connect <name>`. `/is here` ≡ `/is connect here` ≡ `/is c here`. |
 | `install-deps`                   | —     | Install runtime deps (websockets, psutil) with user confirmation. |
 | `list`                           | `l`   | Show connected sessions.                                          |
 | `send <name-or-prefix> <text>`   | `s`   | Send to one peer.                                                 |
@@ -132,7 +133,14 @@ short forms are equivalent (e.g. `send` == `s`):
 | `auto-start [on\|off\|status]`   | —     | Toggle plugin auto-start (plugin install only; edits `monitors.json`). |
 | `help`                           | `h`   | List the subcommands (long + short) and what they do.            |
 
-Examples (standalone install as `is`): `/is c auth-refactor`,
+**Dispatch rule.** Read the first arg. If it matches a known subcommand or
+alias from the table above, dispatch to that subcommand. Otherwise, treat
+the entire arg string as `connect <args>` — so `/is here`, `/is connect here`,
+and `/is c here` are all equivalent. Reject only if the implied name then
+fails `^[a-z0-9][a-z0-9-]{0,39}$` validation (tell the user what was
+invalid and stop).
+
+Examples (standalone install as `is`): `/is here`, `/is c auth-refactor`,
 `/is s planner 'done: tests pass'`, `/is l`, `/is b 'pausing 20 min'`.
 
 ## connect — start the monitor
@@ -149,7 +157,9 @@ Works the same whether the skill is installed as part of the plugin
 `~/.claude/skills/inter-session/SKILL.md`).
 
 1. **Pick a name**:
-   - If the user supplied one as `connect <name>`, validate
+   - If the user supplied one as `connect <name>`, `c <name>`, or the
+     bare shorthand `<name>` (any first arg that isn't a known
+     subcommand or alias — see the Dispatch rule above), validate
      `^[a-z0-9][a-z0-9-]{0,39}$`. Invalid → tell the user and stop.
    - If not, propose 1–3 hyphenated lowercase words from cwd basename +
      obvious recent-conversation theme (e.g., `auth-refactor`,
