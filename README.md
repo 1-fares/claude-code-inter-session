@@ -1,5 +1,3 @@
-[English](./README.md) · [中文](./README.zh.md)
-
 # inter-session
 
 Agent-to-agent messaging for Claude Code sessions on the same machine. Each
@@ -332,4 +330,10 @@ venv`.
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+MIT, see [LICENSE](./LICENSE).
+
+Forked from and based on
+[yilunzhang/claude-code-inter-session](https://github.com/yilunzhang/claude-code-inter-session)
+by Yilun Zhang (original author, MIT). This fork adds file-pointer message
+delivery, a short `/is` invocation, standalone auto-start handling, tests, and
+other changes.
