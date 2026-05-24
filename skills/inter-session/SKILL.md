@@ -128,7 +128,7 @@ short forms are equivalent (e.g. `send` == `s`):
 | `broadcast <text>`               | `b`   | Send to all other peers (≤ 256 KB).                               |
 | `rename <new-name>`              | `r`   | Disconnect and reconnect with the new name.                       |
 | `status`                         | `st`  | Show this session's connection state.                             |
-| `disconnect`                     | `d`   | TaskStop the running monitor.                                     |
+| `disconnect`                     | `d`   | Stop the monitor and free this session's name on the bus.         |
 | `auto-start [on\|off\|status]`   | —     | Toggle plugin auto-start (plugin install only; edits `monitors.json`). |
 | `help`                           | `h`   | List the subcommands (long + short) and what they do.            |
 
@@ -285,8 +285,44 @@ Find the monitor-task-id via `TaskList()`.
 
 ## disconnect
 
-Call `TaskList()`, find the task whose description is `"inter-session messages"`,
-then `TaskStop(<id>)`.
+`/is d` — stop this session's monitor and free its name on the bus.
+Idempotent: a second call on an already-disconnected session prints
+`not connected`.
+
+1. **Run the helper script:**
+   ```
+   Bash("python3 <bin>/disconnect.py")
+   ```
+   It handles both halves of disconnection:
+   - **Bus-side:** opens an authenticated control connection and sends
+     `force_disconnect`. The server pops the listener from its registry,
+     broadcasts `peer_left`, and closes the listener's ws with
+     `CLOSE_CODE_FORCE_DISCONNECT` (4001). The name is free on the bus
+     immediately, regardless of whether any OS signal reaches the python.
+   - **OS-side:** verifies the listener pid is actually gone (the client
+     exits on its own once it receives 4001). If still alive, identity-
+     verifies via psutil (the live process must have *this* skill's
+     `client.py` in its cmdline) and escalates SIGTERM → SIGKILL, re-
+     verifying identity before each signal so a recycled pid is never
+     mis-targeted.
+
+   The script prints exactly one of:
+   | Output | Meaning |
+   | :--- | :--- |
+   | `not connected` | No `.session` for this CC session; nothing to do. |
+   | `not connected (stale state cleaned up)` | `.session` existed but the server didn't know about it (already gone). |
+   | `disconnected` | Clean disconnect. |
+   | `disconnected (required SIGTERM after force_disconnect)` | Python didn't exit on 4001 within the grace window; SIGTERM resolved it. |
+   | `disconnected (required SIGKILL -- pid <N> was unresponsive). Worth reporting if recurring.` | Python wedged through both 4001 and SIGTERM. Surface loudly. |
+
+2. **Then `TaskList()` → `TaskStop(<id>)` for the `"inter-session messages"`
+   task** if it's still listed. Harness-side cleanup; idempotent and
+   harmless if the python already exited via step 1.
+
+3. **Surface the helper's output verbatim** to the user. Do not paraphrase.
+   When the line starts with `disconnected (required SIGKILL`, repeat the
+   "worth reporting" note — it indicates a wedged asyncio loop, not normal
+   behavior.
 
 ## help
 

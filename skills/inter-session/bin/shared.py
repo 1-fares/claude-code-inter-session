@@ -34,6 +34,23 @@ RECONNECT_JITTER_FRAC = 0.2
 ELECTION_BIND_RETRIES = 8
 BROADCAST_RATE_LIMIT_PER_MIN = 60
 
+# Application-defined WebSocket close code used when the server unregisters a
+# listener (either via the control-role `force_disconnect` op or via the
+# orphan-reap task). Clients that observe this code on their socket-close
+# must exit instead of reconnecting — otherwise an unkilled python process
+# would just rejoin under the same name and recreate the ghost.
+CLOSE_CODE_FORCE_DISCONNECT = 4001
+
+# Orphan-reap: every REAP_INTERVAL_S the server re-checks each agent's pid
+# via psutil. A pid that's gone (NoSuchProcess) or in zombie/dead state is
+# an unambiguous orphan signal. Require REAP_MISS_THRESHOLD consecutive
+# observations before evicting so a transient psutil/proc glitch can't
+# mass-reap the registry. PPid-drift is intentionally NOT used here: it
+# false-positives on legitimate reparenting (WSL2 systemd-user,
+# PR_SET_CHILD_SUBREAPER chains, CC harness shell-snapshot recycling).
+REAP_INTERVAL_S = 10
+REAP_MISS_THRESHOLD = 3
+
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 LABEL_MAX_CP = 60

@@ -63,6 +63,8 @@ class Server:
         port: int = shared.DEFAULT_PORT,
         idle_shutdown_minutes: float = 10,
         sock: Optional[socket.socket] = None,
+        reap_interval_s: Optional[float] = None,
+        reap_miss_threshold: Optional[int] = None,
     ):
         self.host = host
         self.port = port
@@ -77,6 +79,20 @@ class Server:
         self._stop = asyncio.Event()
         self._ready = asyncio.Event()
         self._last_activity = time.monotonic()
+        # Orphan-reap: per-sid consecutive-miss counter. Reset on any
+        # observation that the pid is alive and non-zombie.
+        self._orphan_misses: dict[str, int] = {}
+        # Env-overridable so tests can crank the interval down. <=0 disables.
+        env_interval = os.environ.get("INTER_SESSION_REAP_INTERVAL_S")
+        env_threshold = os.environ.get("INTER_SESSION_REAP_MISS_THRESHOLD")
+        self._reap_interval_s: float = (
+            float(env_interval) if env_interval is not None
+            else (reap_interval_s if reap_interval_s is not None else shared.REAP_INTERVAL_S)
+        )
+        self._reap_miss_threshold: int = (
+            int(env_threshold) if env_threshold is not None
+            else (reap_miss_threshold if reap_miss_threshold is not None else shared.REAP_MISS_THRESHOLD)
+        )
 
     async def serve(self) -> None:
         shared.secure_dir(shared.data_dir())
@@ -113,10 +129,12 @@ class Server:
         log.info("inter-session server listening on %s", self.port)
 
         idle_task = asyncio.create_task(self._idle_shutdown_loop())
+        reap_task = asyncio.create_task(self._orphan_reap_loop())
         try:
             await self._stop.wait()
         finally:
             idle_task.cancel()
+            reap_task.cancel()
             server.close()
             await server.wait_closed()
             # Only remove the pidfile/meta if they still belong to this server
@@ -189,6 +207,107 @@ class Server:
                     log.info("idle shutdown")
                     self._stop.set()
                     return
+
+    async def _orphan_reap_loop(self) -> None:
+        """Safety net for orphaned listeners.
+
+        A listener whose python is alive but orphaned (parent died, harness
+        signal didn't reach it) keeps its websocket open and looks
+        indistinguishable from a healthy peer on the wire. Periodically we
+        re-check each agent's pid via psutil. The only orphan signal we use
+        is "pid gone OR zombie/dead", which is unambiguous; PPid-drift is
+        intentionally avoided since it false-positives on legitimate
+        reparenting on this machine (WSL2 systemd-user, subreaper chains,
+        CC harness snapshot-bash recycling). Requires
+        REAP_MISS_THRESHOLD consecutive misses before eviction so a
+        transient psutil/proc glitch can't mass-reap the registry.
+
+        Evicted listeners are closed with CLOSE_CODE_FORCE_DISCONNECT so
+        any still-running python exits its reconnect loop instead of
+        rejoining and recreating the ghost.
+        """
+        if self._reap_interval_s <= 0:
+            return
+        try:
+            import psutil
+        except ImportError:
+            return  # cannot reap without psutil
+        while not self._stop.is_set():
+            try:
+                try:
+                    await asyncio.sleep(self._reap_interval_s)
+                except asyncio.CancelledError:
+                    return
+                if self._stop.is_set():
+                    return
+                # Snapshot under the registry lock, then do OS calls lock-free.
+                async with self._registry_lock:
+                    snapshot = [(c.session_id, c) for c in self._registry.values()
+                                if c.role == shared.Role.AGENT]
+                victims: list[ClientState] = []
+                live_sids: set[str] = set()
+                for sid, state in snapshot:
+                    live_sids.add(sid)
+                    pid = state.pid
+                    if pid <= 0:
+                        self._orphan_misses.pop(sid, None)
+                        continue
+                    marked = False
+                    try:
+                        st = psutil.Process(pid).status()
+                        if st in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD):
+                            marked = True
+                    except psutil.NoSuchProcess:
+                        marked = True
+                    except psutil.AccessDenied:
+                        # Transient permission flake — neutral, leave counter alone.
+                        continue
+                    except Exception:
+                        log.exception("orphan-reap: psutil error for pid %s", pid)
+                        continue
+                    if marked:
+                        self._orphan_misses[sid] = self._orphan_misses.get(sid, 0) + 1
+                        if self._orphan_misses[sid] >= self._reap_miss_threshold:
+                            victims.append(state)
+                    else:
+                        self._orphan_misses.pop(sid, None)
+                # Drop counters for sids that left the registry between ticks.
+                for sid in list(self._orphan_misses):
+                    if sid not in live_sids:
+                        self._orphan_misses.pop(sid, None)
+                # Evict victims one by one, re-acquiring the lock with an
+                # identity check so we don't close a replaced/reconnected entry.
+                for state in victims:
+                    async with self._registry_lock:
+                        current = self._registry.get(state.session_id)
+                        if current is not state:
+                            self._orphan_misses.pop(state.session_id, None)
+                            continue
+                        self._registry.pop(state.session_id, None)
+                        self._last_activity = time.monotonic()
+                        self._orphan_misses.pop(state.session_id, None)
+                    await self._broadcast_event(
+                        {"op": "peer_left", "session_id": state.session_id},
+                        exclude=state.session_id,
+                    )
+                    try:
+                        await state.ws.close(
+                            code=shared.CLOSE_CODE_FORCE_DISCONNECT,
+                            reason="orphan reap",
+                        )
+                    except Exception:
+                        pass
+                    log.info(
+                        "orphan-reap evicted sid=%s name=%s pid=%s",
+                        state.session_id, state.name, state.pid,
+                    )
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                # Never let a single iteration kill the loop — that would
+                # silently disable the safety net for the rest of the
+                # server's life.
+                log.exception("orphan-reap loop iteration failed")
 
     async def _handler(self, ws: WebSocketServerProtocol) -> None:
         state: Optional[ClientState] = None
@@ -401,6 +520,8 @@ class Server:
                 await self._handle_broadcast(state, payload)
             elif op == "rename":
                 await self._handle_rename(state, payload)
+            elif op == "force_disconnect":
+                await self._handle_force_disconnect(state)
             elif op == "bye":
                 return
             elif op == "hello":
@@ -669,6 +790,71 @@ class Server:
             {"op": "renamed", "session_id": target_sid, "name": new_name},
             exclude=target_sid,
         )
+
+    async def _handle_force_disconnect(self, state: ClientState) -> None:
+        """Control-only: close the listener this control connection acts for.
+
+        Frees the name on the bus immediately — the listener's `session_id` is
+        popped from the registry and `peer_left` is broadcast before the ack
+        returns to the caller. The listener's websocket is then closed with
+        `CLOSE_CODE_FORCE_DISCONNECT` so that any still-running client process
+        exits its reconnect loop instead of rejoining under the same name.
+
+        This is the primary mechanism behind `/is d`: it does not depend on
+        the harness delivering any OS signal to the client, so it works even
+        when the harness `TaskStop` is a no-op.
+        """
+        if state.role != shared.Role.CONTROL:
+            await self._send_error(state.ws, shared.ErrorCode.UNKNOWN_OP,
+                                   "force_disconnect is control-only")
+            return
+        target_sid = getattr(state, "_for_session", None)
+        if not target_sid:
+            await self._send_error(state.ws, shared.ErrorCode.UNKNOWN_PEER,
+                                   "no target listener for this control")
+            return
+        target: Optional[ClientState] = None
+        async with self._registry_lock:
+            existing = self._registry.get(target_sid)
+            if existing is not None and existing.role == shared.Role.AGENT:
+                self._registry.pop(target_sid, None)
+                self._last_activity = time.monotonic()
+                target = existing
+        if target is None:
+            # Already gone — idempotent ack so the caller still gets a clean
+            # reply (e.g. when /is d races a parallel client-side close).
+            try:
+                await state.ws.send(json.dumps({
+                    "op": "force_disconnect_ok",
+                    "session_id": target_sid,
+                    "was_present": False,
+                }))
+            except websockets.ConnectionClosed:
+                pass
+            return
+        # Order: announce peer_left before closing the target ws, so other
+        # peers see the departure cleanly. The target's own _handler finally
+        # will also call _unregister, but its identity check is a no-op since
+        # we already popped.
+        await self._broadcast_event(
+            {"op": "peer_left", "session_id": target_sid},
+            exclude=target_sid,
+        )
+        try:
+            await target.ws.close(
+                code=shared.CLOSE_CODE_FORCE_DISCONNECT,
+                reason="session ended by owner",
+            )
+        except Exception:
+            pass
+        try:
+            await state.ws.send(json.dumps({
+                "op": "force_disconnect_ok",
+                "session_id": target_sid,
+                "was_present": True,
+            }))
+        except websockets.ConnectionClosed:
+            pass
 
     async def _broadcast_event(self, msg: dict, exclude: Optional[str] = None) -> None:
         async with self._registry_lock:
