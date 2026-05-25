@@ -5,7 +5,7 @@ architecture lives in `CLAUDE.md`.
 
 ## Repository
 
-- Private fork at `1-fares/claude-code-inter-session` (origin, SSH),
+- Public fork at `1-fares/claude-code-inter-session` (origin, SSH),
   disconnected from the original upstream. Single remote, so commit +
   push lands directly here.
 
