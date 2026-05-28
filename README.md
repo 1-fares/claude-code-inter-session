@@ -58,6 +58,44 @@ Code sessions you already have open, or if your agent-team task spans
 multiple projects you're working in separately, inter-session is the
 natural fit — your existing sessions become the team.
 
+## How it works
+
+Three process classes share a localhost WebSocket bus:
+
+```
+   ┌──────────────┐                ┌──────────────┐
+   │ CC session A │                │ CC session B │
+   │  /is, /is s… │                │  /is, /is s… │
+   └──────┬───────┘                └──────┬───────┘
+          │ client.py (monitor,           │ client.py (monitor,
+          │  long-lived, per session)     │  long-lived, per session)
+          │                               │
+          └─────────────┐   ┌─────────────┘
+                        ▼   ▼
+               ┌─────────────────────┐
+               │      server.py      │   127.0.0.1:9473
+               │  (asyncio, single   │   bearer-token auth
+               │   instance, idle    │   ~/.claude/data/
+               │   shutdown)         │   inter-session/
+               └─────────────────────┘
+                        ▲
+                        │  short-lived control CLIs
+                        │  (send.py, list.py, disconnect.py)
+```
+
+- **`server.py`** is auto-started on first connect by whichever client
+  wins a `bind()` election. It owns the registry of connected agents,
+  routes messages, writes `messages.log`, and exits after the configured
+  idle window.
+- **`client.py`** runs as a Claude Code `Monitor` task in each session.
+  Each line it prints becomes a CC notification, which is how the
+  receiving agent reacts on its own (push delivery, no polling).
+- **`send.py` / `list.py` / `disconnect.py`** are short-lived helpers
+  invoked over `Bash` for one-shot operations.
+
+Deeper invariants — race-free election, role separation, three-tier size
+limits — live in [`CLAUDE.md`](./CLAUDE.md).
+
 ## Prerequisites
 
 - Python ≥ 3.10
@@ -77,9 +115,12 @@ the shortest command. The skill's slash trigger is its install
 `/is`:
 
 ```bash
-git clone git@github.com:1-fares/claude-code-inter-session.git
-ln -s "$PWD/claude-code-inter-session/skills/inter-session" ~/.claude/skills/is
+git clone https://github.com/1-fares/claude-code-inter-session.git ~/src/claude-code-inter-session
+ln -s ~/src/claude-code-inter-session/skills/inter-session ~/.claude/skills/is
 ```
+
+(Adjust `~/src/...` to wherever you keep checkouts. The symlink target
+must be an absolute path so Claude Code can resolve it from any cwd.)
 
 Then, in any Claude Code session:
 
@@ -95,8 +136,7 @@ extra setup needed.
 
 The plugin adds a config UI (port, idle-shutdown) and marketplace-style
 updates, at the cost of a longer, namespaced command
-(`/inter-session:inter-session …`). The repo is private, so this requires
-git access to it:
+(`/inter-session:inter-session …`):
 
 ```
 /plugin marketplace add https://github.com/1-fares/claude-code-inter-session
@@ -327,6 +367,17 @@ make clean        # remove .venv
 
 The Makefile prefers `uv` if installed, falling back to `python3 -m
 venv`.
+
+## Contributing
+
+Bug reports and PRs welcome via
+[GitHub issues](https://github.com/1-fares/claude-code-inter-session/issues).
+The project is TDD throughout; new behavior should come with tests under
+`tests/`, and `make test` should pass before opening a PR.
+[`CLAUDE.md`](./CLAUDE.md) documents the non-obvious invariants
+(race-free server election, role separation, size limits, the
+`userConfig` delivery mechanism) — read it before changing the affected
+code.
 
 ## License
 
