@@ -54,6 +54,23 @@ abbreviated label, the actual path is
 
 Single user, single machine. Unix-only (macOS / Linux / WSL2).
 
+## Public repository: no private data (binding)
+
+This repo is public (`github.com/1-fares/claude-code-inter-session`). Keep every
+operator-specific detail out of tracked files.
+
+- **Never commit:** real usernames or home paths (use `~/...`, `$HOME`, or a
+  placeholder like `/home/x/...` in tests, never a real `/home/<user>` or
+  `/Users/<user>`), real email addresses, employer/client names, secrets (bearer
+  tokens, API keys, passwords), non-local IPs, or private endpoints. Runtime
+  state under `~/.claude/data/inter-session/` (tokens, pidfiles, `messages.log`)
+  is never tracked and must stay that way.
+- **The only intentional identity** in tracked files is the public GitHub handle
+  `1-fares` and the `LICENSE` copyright line. Tests use synthetic paths
+  (`/home/x/...`) and placeholder addresses; do not replace them with real ones.
+- **Before any commit, sweep the staged diff** for `/home/<user>`, `/Users/`,
+  real email domains, and secret-like tokens, and clear every real hit.
+
 ## Common commands
 
 Local dev runs entirely in a project-local venv at `.venv`. The
