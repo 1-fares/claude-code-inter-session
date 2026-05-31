@@ -124,6 +124,13 @@ async def _run(args) -> int:
             pass
     finally:
         await ws.close()
+    # Emit an explicit success line on stdout. Previously a successful send
+    # produced no output ("success is silence"), which is indistinguishable
+    # from a dropped/empty tool result, so callers retried and re-verified
+    # successful sends, a major source of wasted cycles. With this line, empty
+    # stdout unambiguously means failure.
+    target = "all" if args.all else args.to
+    print(f"sent -> {target} ({len(args.text)} chars)")
     return 0
 
 
