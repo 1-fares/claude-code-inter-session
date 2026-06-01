@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg"
-     viewBox="0 0 900 520"
-     width="900" height="520"
+     viewBox="0 0 900 410"
+     width="900" height="410"
      role="img"
-     aria-label="Two Claude Code sessions iterating on a rate-limiter via inter-session">
-  <title>inter-session demo: TDD-style iterative loop, 5 rounds</title>
-  <desc>The user kicks off the impl session with a request to TDD a rate-limiter with the rev session. Impl forwards versions via send.py; rev runs adversarial pytest cases and replies. After 5 rounds the suite is clean and impl reports back to the user.</desc>
+     aria-label="Two Claude Code sessions coordinating a schema change via inter-session">
+  <title>inter-session demo: backend asks web to surface a new field, two rounds, then both disconnect</title>
+  <desc>The backend session connects as `backend`; the web session connects as `web`. Backend sends a request with /is s web; web edits the UI, rebuilds, and replies with /is s backend. After a second round both sides disconnect with /is d.</desc>
 
   <style>
     .bg     { fill: #0d1117; }
@@ -25,108 +25,97 @@
 
     .dot    { fill: #7ee787; }
     .str    { fill: #a5d6ff; }
+    .cmd    { fill: #ffa657; font-weight: 600; }
     .arrow  { fill: #8b949e; }
     .pass   { fill: #7ee787; }
-    .fail   { fill: #ff7b72; }
     .prompt { fill: #ffa657; font-weight: 600; }
 
-    /* Cycle = 16s, 0.5s spacing per event = 3.125% per step.
-       22 events fade in one after another, then hold, then fade out together. */
-    @keyframes f01 { 0%,3.125%  {opacity:0} 6.25%,87.5%  {opacity:1} 93.75%,100% {opacity:0} }
-    @keyframes f02 { 0%,6.25%   {opacity:0} 9.375%,87.5% {opacity:1} 93.75%,100% {opacity:0} }
-    @keyframes f03 { 0%,9.375%  {opacity:0} 12.5%,87.5%  {opacity:1} 93.75%,100% {opacity:0} }
-    @keyframes f04 { 0%,12.5%   {opacity:0} 15.625%,87.5%{opacity:1} 93.75%,100% {opacity:0} }
-    @keyframes f05 { 0%,15.625% {opacity:0} 18.75%,87.5% {opacity:1} 93.75%,100% {opacity:0} }
-    @keyframes f06 { 0%,18.75%  {opacity:0} 21.875%,87.5%{opacity:1} 93.75%,100% {opacity:0} }
-    @keyframes f07 { 0%,21.875% {opacity:0} 25%,87.5%    {opacity:1} 93.75%,100% {opacity:0} }
-    @keyframes f08 { 0%,25%     {opacity:0} 28.125%,87.5%{opacity:1} 93.75%,100% {opacity:0} }
-    @keyframes f09 { 0%,28.125% {opacity:0} 31.25%,87.5% {opacity:1} 93.75%,100% {opacity:0} }
-    @keyframes f10 { 0%,31.25%  {opacity:0} 34.375%,87.5%{opacity:1} 93.75%,100% {opacity:0} }
-    @keyframes f11 { 0%,34.375% {opacity:0} 37.5%,87.5%  {opacity:1} 93.75%,100% {opacity:0} }
-    @keyframes f12 { 0%,37.5%   {opacity:0} 40.625%,87.5%{opacity:1} 93.75%,100% {opacity:0} }
-    @keyframes f13 { 0%,40.625% {opacity:0} 43.75%,87.5% {opacity:1} 93.75%,100% {opacity:0} }
-    @keyframes f14 { 0%,43.75%  {opacity:0} 46.875%,87.5%{opacity:1} 93.75%,100% {opacity:0} }
-    @keyframes f15 { 0%,46.875% {opacity:0} 50%,87.5%    {opacity:1} 93.75%,100% {opacity:0} }
-    @keyframes f16 { 0%,50%     {opacity:0} 53.125%,87.5%{opacity:1} 93.75%,100% {opacity:0} }
-    @keyframes f17 { 0%,53.125% {opacity:0} 56.25%,87.5% {opacity:1} 93.75%,100% {opacity:0} }
-    @keyframes f18 { 0%,56.25%  {opacity:0} 59.375%,87.5%{opacity:1} 93.75%,100% {opacity:0} }
-    @keyframes f19 { 0%,59.375% {opacity:0} 62.5%,87.5%  {opacity:1} 93.75%,100% {opacity:0} }
-    @keyframes f20 { 0%,62.5%   {opacity:0} 65.625%,87.5%{opacity:1} 93.75%,100% {opacity:0} }
-    @keyframes f21 { 0%,65.625% {opacity:0} 68.75%,87.5% {opacity:1} 93.75%,100% {opacity:0} }
-    @keyframes f22 { 0%,68.75%  {opacity:0} 71.875%,87.5%{opacity:1} 93.75%,100% {opacity:0} }
+    /* Cycle = 16s. 18 events fade in one after another (4% apart, 2% fade),
+       hold to 88%, then fade out together by 94%. */
+    @keyframes f01 { 0%      {opacity:0} 2%,88%  {opacity:1} 94%,100% {opacity:0} }
+    @keyframes f02 { 0%,4%   {opacity:0} 6%,88%  {opacity:1} 94%,100% {opacity:0} }
+    @keyframes f03 { 0%,8%   {opacity:0} 10%,88% {opacity:1} 94%,100% {opacity:0} }
+    @keyframes f04 { 0%,12%  {opacity:0} 14%,88% {opacity:1} 94%,100% {opacity:0} }
+    @keyframes f05 { 0%,16%  {opacity:0} 18%,88% {opacity:1} 94%,100% {opacity:0} }
+    @keyframes f06 { 0%,20%  {opacity:0} 22%,88% {opacity:1} 94%,100% {opacity:0} }
+    @keyframes f07 { 0%,24%  {opacity:0} 26%,88% {opacity:1} 94%,100% {opacity:0} }
+    @keyframes f08 { 0%,28%  {opacity:0} 30%,88% {opacity:1} 94%,100% {opacity:0} }
+    @keyframes f09 { 0%,32%  {opacity:0} 34%,88% {opacity:1} 94%,100% {opacity:0} }
+    @keyframes f10 { 0%,36%  {opacity:0} 38%,88% {opacity:1} 94%,100% {opacity:0} }
+    @keyframes f11 { 0%,40%  {opacity:0} 42%,88% {opacity:1} 94%,100% {opacity:0} }
+    @keyframes f12 { 0%,44%  {opacity:0} 46%,88% {opacity:1} 94%,100% {opacity:0} }
+    @keyframes f13 { 0%,48%  {opacity:0} 50%,88% {opacity:1} 94%,100% {opacity:0} }
+    @keyframes f14 { 0%,52%  {opacity:0} 54%,88% {opacity:1} 94%,100% {opacity:0} }
+    @keyframes f15 { 0%,56%  {opacity:0} 58%,88% {opacity:1} 94%,100% {opacity:0} }
+    @keyframes f16 { 0%,60%  {opacity:0} 62%,88% {opacity:1} 94%,100% {opacity:0} }
+    @keyframes f17 { 0%,64%  {opacity:0} 66%,88% {opacity:1} 94%,100% {opacity:0} }
+    @keyframes f18 { 0%,68%  {opacity:0} 70%,88% {opacity:1} 94%,100% {opacity:0} }
 
-    /* Step order: L0 L1 R1 R2 L2 L3 R3 R4 L4 L5 R5 R6 L6 L7 R7 R8 L8 L9 R9 R10 L10 L11 */
-    .L0  { animation: f01 16s linear infinite both; }
-    .L1  { animation: f02 16s linear infinite both; }
-    .R1  { animation: f03 16s linear infinite both; }
-    .R2  { animation: f04 16s linear infinite both; }
-    .L2  { animation: f05 16s linear infinite both; }
-    .L3  { animation: f06 16s linear infinite both; }
-    .R3  { animation: f07 16s linear infinite both; }
-    .R4  { animation: f08 16s linear infinite both; }
-    .L4  { animation: f09 16s linear infinite both; }
-    .L5  { animation: f10 16s linear infinite both; }
-    .R5  { animation: f11 16s linear infinite both; }
-    .R6  { animation: f12 16s linear infinite both; }
-    .L6  { animation: f13 16s linear infinite both; }
-    .L7  { animation: f14 16s linear infinite both; }
-    .R7  { animation: f15 16s linear infinite both; }
-    .R8  { animation: f16 16s linear infinite both; }
-    .L8  { animation: f17 16s linear infinite both; }
-    .L9  { animation: f18 16s linear infinite both; }
-    .R9  { animation: f19 16s linear infinite both; }
-    .R10 { animation: f20 16s linear infinite both; }
-    .L10 { animation: f21 16s linear infinite both; }
-    .L11 { animation: f22 16s linear infinite both; }
+    /* Chronological step order:
+       L0 L1 R0 R1 L2 L3 R2 R3 R4 L4 L5 L6 R5 R6 R7 L7 L8 R8 */
+    .L0 { animation: f01 16s linear infinite both; }
+    .L1 { animation: f02 16s linear infinite both; }
+    .R0 { animation: f03 16s linear infinite both; }
+    .R1 { animation: f04 16s linear infinite both; }
+    .L2 { animation: f05 16s linear infinite both; }
+    .L3 { animation: f06 16s linear infinite both; }
+    .R2 { animation: f07 16s linear infinite both; }
+    .R3 { animation: f08 16s linear infinite both; }
+    .R4 { animation: f09 16s linear infinite both; }
+    .L4 { animation: f10 16s linear infinite both; }
+    .L5 { animation: f11 16s linear infinite both; }
+    .L6 { animation: f12 16s linear infinite both; }
+    .R5 { animation: f13 16s linear infinite both; }
+    .R6 { animation: f14 16s linear infinite both; }
+    .R7 { animation: f15 16s linear infinite both; }
+    .L7 { animation: f16 16s linear infinite both; }
+    .L8 { animation: f17 16s linear infinite both; }
+    .R8 { animation: f18 16s linear infinite both; }
   </style>
 
-  <rect class="bg" width="900" height="520"/>
+  <rect class="bg" width="900" height="410"/>
 
-  <text class="topTitle" x="450" y="28" text-anchor="middle">user → impl session → rev session — TDD-style iterative loop via inter-session (illustration only)</text>
+  <text class="topTitle" x="450" y="28" text-anchor="middle">backend session ⇄ web session — delegating a UI change via inter-session (illustration only)</text>
 
-  <!-- Left pane: impl session -->
+  <!-- Left pane: backend session -->
   <g transform="translate(20, 50)">
-    <rect class="pane" width="420" height="450" rx="6"/>
-    <text class="path"   x="16"  y="22">~/proj/rate-limiter</text>
+    <rect class="pane" width="420" height="340" rx="6"/>
+    <text class="path"   x="16"  y="22">~/proj/api</text>
     <text class="branch" x="210" y="22" text-anchor="middle">git:(main)</text>
-    <text class="role"   x="404" y="22" text-anchor="end">impl</text>
+    <text class="role"   x="404" y="22" text-anchor="end">backend</text>
     <line stroke="#30363d" stroke-width="1" x1="16" y1="32" x2="404" y2="32"/>
 
-    <g transform="translate(16, 60)">
-      <text class="line L0"  y="0"><tspan class="prompt">&gt;</tspan> work with rev to TDD a rate-limiter</text>
-      <text class="line L1"  y="30"><tspan class="dot">●</tspan> Bash(send.py <tspan class="str">"v1: token-bucket + refill"</tspan>)</text>
-      <text class="line incoming L2" y="56">[from rev] off-by-one at threshold</text>
-      <text class="line L3"  y="86"><tspan class="dot">●</tspan> Bash(send.py <tspan class="str">"v2: threshold fixed"</tspan>)</text>
-      <text class="line incoming L4" y="112">[from rev] race in concurrent path</text>
-      <text class="line L5"  y="142"><tspan class="dot">●</tspan> Bash(send.py <tspan class="str">"v3: race fixed"</tspan>)</text>
-      <text class="line incoming L6" y="168">[from rev] leap-second negative refill</text>
-      <text class="line L7"  y="198"><tspan class="dot">●</tspan> Bash(send.py <tspan class="str">"v4: clock-skew handled"</tspan>)</text>
-      <text class="line incoming L8" y="224">[from rev] fuzz: deadlock @ burst=0</text>
-      <text class="line L9"  y="254"><tspan class="dot">●</tspan> Bash(send.py <tspan class="str">"v5: edge case + regression"</tspan>)</text>
-      <text class="line incoming L10" y="280">[from rev] done: 18/18 <tspan class="pass">✓</tspan></text>
-      <text class="line L11" y="316">rate-limiter ready: 18 tests + rev sign-off <tspan class="pass">✓</tspan></text>
+    <g transform="translate(16, 54)">
+      <text class="line L0" y="0"><tspan class="prompt">&gt;</tspan> <tspan class="cmd">/is c backend</tspan></text>
+      <text class="line L1" y="26"><tspan class="arrow">→</tspan> connected <tspan class="pass">✓</tspan></text>
+      <text class="line L2" y="60"><tspan class="prompt">&gt;</tspan> ask web to add created_at to the table</text>
+      <text class="line L3" y="90"><tspan class="dot">●</tspan> <tspan class="cmd">/is s web</tspan> <tspan class="str">"/users now returns created_at"</tspan></text>
+      <text class="line incoming L4" y="120">[from web] done: column added, build <tspan class="pass">✓</tspan></text>
+      <text class="line L5" y="154"><tspan class="prompt">&gt;</tspan> also sort by it, newest first</text>
+      <text class="line L6" y="184"><tspan class="dot">●</tspan> <tspan class="cmd">/is s web</tspan> <tspan class="str">"sort the table by it, desc"</tspan></text>
+      <text class="line incoming L7" y="214">[from web] done: sorted desc, tsc <tspan class="pass">✓</tspan></text>
+      <text class="line L8" y="248"><tspan class="prompt">&gt;</tspan> <tspan class="cmd">/is d</tspan>   <tspan class="arrow">→</tspan> disconnected</text>
     </g>
   </g>
 
-  <!-- Right pane: rev session -->
+  <!-- Right pane: web session -->
   <g transform="translate(460, 50)">
-    <rect class="pane" width="420" height="450" rx="6"/>
-    <text class="path"   x="16"  y="22">~/proj/rate-limiter</text>
+    <rect class="pane" width="420" height="340" rx="6"/>
+    <text class="path"   x="16"  y="22">~/proj/web</text>
     <text class="branch" x="210" y="22" text-anchor="middle">git:(main)</text>
-    <text class="role"   x="404" y="22" text-anchor="end">rev</text>
+    <text class="role"   x="404" y="22" text-anchor="end">web</text>
     <line stroke="#30363d" stroke-width="1" x1="16" y1="32" x2="404" y2="32"/>
 
-    <g transform="translate(16, 90)">
-      <text class="line incoming R1" y="0">[from impl] v1: token-bucket + refill</text>
-      <text class="line R2"  y="26"><tspan class="dot">●</tspan> Bash(pytest test_burst.py) <tspan class="arrow">→</tspan> 3/4 pass</text>
-      <text class="line incoming R3" y="56">[from impl] v2: threshold fixed</text>
-      <text class="line R4"  y="82"><tspan class="dot">●</tspan> Bash(pytest) <tspan class="arrow">→</tspan> + concurrent: 6/8 pass</text>
-      <text class="line incoming R5" y="112">[from impl] v3: race fixed</text>
-      <text class="line R6"  y="138"><tspan class="dot">●</tspan> Bash(pytest) <tspan class="arrow">→</tspan> + clock_skew: 11/12 pass</text>
-      <text class="line incoming R7" y="168">[from impl] v4: clock-skew handled</text>
-      <text class="line R8"  y="194"><tspan class="dot">●</tspan> Bash(pytest --fuzz=100k) <tspan class="arrow">→</tspan> <tspan class="fail">deadlock</tspan></text>
-      <text class="line incoming R9" y="224">[from impl] v5: edge case + regression</text>
-      <text class="line R10" y="250"><tspan class="dot">●</tspan> Bash(send.py <tspan class="str">"done: 18/18 ✓"</tspan>)</text>
+    <g transform="translate(16, 54)">
+      <text class="line R0" y="0"><tspan class="prompt">&gt;</tspan> <tspan class="cmd">/is c web</tspan></text>
+      <text class="line R1" y="26"><tspan class="arrow">→</tspan> connected <tspan class="pass">✓</tspan></text>
+      <text class="line incoming R2" y="60">[from backend] /users now returns created_at</text>
+      <text class="line R3" y="90"><tspan class="dot">●</tspan> Edit UserTable.tsx · npm run build <tspan class="arrow">→</tspan> <tspan class="pass">✓</tspan></text>
+      <text class="line R4" y="120"><tspan class="dot">●</tspan> <tspan class="cmd">/is s backend</tspan> <tspan class="str">"done: column added, build ✓"</tspan></text>
+      <text class="line incoming R5" y="154">[from backend] sort the table by it, desc</text>
+      <text class="line R6" y="184"><tspan class="dot">●</tspan> Edit UserTable.tsx · sort desc <tspan class="arrow">→</tspan> <tspan class="pass">✓</tspan></text>
+      <text class="line R7" y="214"><tspan class="dot">●</tspan> <tspan class="cmd">/is s backend</tspan> <tspan class="str">"done: sorted desc, tsc ✓"</tspan></text>
+      <text class="line R8" y="248"><tspan class="prompt">&gt;</tspan> <tspan class="cmd">/is d</tspan>   <tspan class="arrow">→</tspan> disconnected</text>
     </g>
   </g>
 </svg>
