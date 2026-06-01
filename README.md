@@ -12,7 +12,7 @@ Does NOT require claude.ai login. No configuration needed.
 
 Localhost only and Unix-only (macOS, Linux, WSL2) for now.
 
-![demo](./demo.svg)
+![demo](./demo-flow.svg)
 
 ## How does this compare to subagents and agent teams?
 
