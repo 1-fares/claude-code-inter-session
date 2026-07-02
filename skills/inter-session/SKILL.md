@@ -1,16 +1,12 @@
 ---
 name: inter-session
 description: |
-  Agent-to-agent messaging bus for Claude Code. Use this skill whenever the
-  user wants to send messages between local Claude Code sessions, delegate a
-  task to another running session, fan-out work across multiple Claude
-  agents, coordinate between concurrent sessions, broadcast a message to
-  all connected sessions, or check what other sessions are doing on this
-  machine. Triggers include: "/inter-session", "inter-session", "connect to
-  other sessions", "send message to another claude session", "list claude
-  sessions", "broadcast", "delegate to another session", "tell other claude
-  to ...". Each connected session is treated as a peer AI agent — the user
-  installed this system specifically so one session can drive another.
+  Agent-to-agent messaging bus for Claude Code sessions on this machine.
+  Use when the user wants to message, delegate to, coordinate with, or
+  broadcast to other local Claude Code sessions, or list what they are
+  doing. Triggers: "/inter-session", "send message to another claude
+  session", "list claude sessions", "broadcast to sessions", "delegate to
+  another session", "tell other claude to ...".
 allowed-tools: [Bash, Monitor, TaskList, TaskStop]
 ---
 
