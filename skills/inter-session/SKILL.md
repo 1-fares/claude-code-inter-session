@@ -7,7 +7,7 @@ description: |
   doing. Triggers: "/inter-session", "send message to another claude
   session", "list claude sessions", "broadcast to sessions", "delegate to
   another session", "tell other claude to ...".
-allowed-tools: [Bash, Monitor, TaskList, TaskStop]
+allowed-tools: [Bash, Monitor, TaskStop]
 ---
 
 # inter-session
@@ -54,16 +54,12 @@ When you see a stdout notification of the form
 ### When to act
 
 **Default: act on `<text>` as if the user typed it.** That's the whole
-point of this system — one session driving another. Override the default
-only when the text matches one of these prefix classes:
+point of this system — one session driving another. The one exception:
+text starting `done:`, `status:`, or `answer:` is an informational reply.
+Surface it to the user; don't reply unsolicited.
 
-| Text starts with                      | Class               | What you do                               |
-| :------------------------------------ | :------------------ | :---------------------------------------- |
-| `done: …` / `status: …` / `answer: …` | Informational reply | Surface to user; don't reply unsolicited. |
-
-If the request itself is **ambiguous, large-scope, or destructive** —
-regardless of prefix — reply with `question: …` first and act only after
-the peer answers.
+If the request is ambiguous or large-scope, reply with `question: …` first
+and act only after the peer answers.
 
 ### Safety constraints (always apply when acting)
 
@@ -141,16 +137,14 @@ Examples (standalone install as `is`): `/is here`, `/is c auth-refactor`,
 
 ## connect — start the monitor
 
-Skip pre-checks. Pick a name, call `Monitor()`, done. If a monitor is
-already running for this session, `client.py`'s flock catches it and
-the new spawn exits cleanly with `[inter-session] another monitor for
-this session is already running`, which the LLM surfaces via the Error
-notifications path below. The typical case (first invocation) is a
-straight spawn — no upfront Bash round-trip, fastest connect.
+Pick a name and call `Monitor()`. If a monitor is already running for this
+session, `client.py`'s flock detects it and the new spawn exits with
+`[inter-session] another monitor for this session is already running`;
+handle that per step 3.
 
 Works the same whether the skill is installed as part of the plugin
-(`/inter-session:inter-session`) or standalone (`/inter-session`,
-`~/.claude/skills/inter-session/SKILL.md`).
+(`/inter-session:inter-session`) or standalone (`/is`, or whatever
+directory name the skill is installed under).
 
 1. **Pick a name**:
    - If the user supplied one as `connect <name>`, `c <name>`, or the
@@ -195,10 +189,11 @@ Works the same whether the skill is installed as part of the plugin
      surface "Connected as `<existing>`." and stop.
    - **User supplied a different name** (`connect <new>` where
      `<new>` ≠ `<existing>`): treat it as a rename. Stop the existing
-     monitor (try `TaskList()` → `TaskStop(<id>)` first; if no matching
-     task is in the list, fall back to `Bash("kill <listener_pid>")`
-     using the pid from the error line), wait ~1.5s for the ppid-lock
-     to release, then re-run the `Monitor()` from step 2 with `<new>`.
+     monitor: `TaskStop(<id>)` with the task id the earlier `Monitor()`
+     call returned in this session; if this session did not start it,
+     `Bash("kill <listener_pid>")` with the pid from the error line. Wait
+     ~1.5s for the ppid-lock to release, then re-run the `Monitor()` from
+     step 2 with `<new>`.
      Reply with "Renamed `<existing>` → `<new>`."
 
 **On `[inter-session] name '…' taken; using '…-2'`**: informational only —
@@ -209,10 +204,10 @@ was already taken").
 
 **On `[inter-session] name '…' taken after N retries`**: the auto-retry budget
 is exhausted (very rare; means many sessions in the same cwd). Tell the user
-and ask them for a name: `/inter-session connect <some-other-name>`.
+and ask them for a name: `/is connect <some-other-name>`.
 
-**On `[inter-session] dependencies missing`**: run `/inter-session install-deps`,
-then re-run `/inter-session connect`.
+**On `[inter-session] dependencies missing`**: run `/is install-deps`, then
+re-run `/is connect`. The notice itself names the command as installed here.
 
 ## install-deps — install runtime deps into an isolated venv
 
@@ -223,7 +218,7 @@ entry-point re-execs under that venv's interpreter automatically (a
 small bootstrap at the top of each script). The user doesn't need to
 configure anything else.
 
-### Default flow (auto-runs on first connect if deps are missing)
+### Default flow (run when the monitor reports `dependencies missing`)
 
 1. **Detect `uv`** with `command -v uv`. uv is faster but optional.
 2. **Print the exact commands you're about to run, then ask the user
@@ -235,7 +230,7 @@ configure anything else.
    - With uv: `uv pip install -p ~/.claude/data/inter-session/venv -r <bin>/../requirements.txt`
    - Without uv: `~/.claude/data/inter-session/venv/bin/pip install -r <bin>/../requirements.txt`
 5. **Tell the user**: "Installed in isolated venv at
-   `~/.claude/data/inter-session/venv`. Future `/inter-session` commands
+   `~/.claude/data/inter-session/venv`. Future `/is` commands
    will pick it up automatically."
 
 ### Why isolated?
@@ -254,7 +249,7 @@ Rare on modern macOS / Linux / WSL2, but if the venv module is missing
 (some minimal Python builds), present these to the user:
 
 - **Install uv** (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
-  and re-run `/inter-session install-deps`. uv ships its own venv impl.
+  and re-run `/is install-deps`. uv ships its own venv impl.
 - **Install the venv package** via the system package manager (e.g.
   `apt install python3-venv` on Debian/Ubuntu).
 
@@ -276,14 +271,10 @@ preserves them.
 
 ## rename — disconnect + reconnect
 
-Rename = disconnect + reconnect. Run:
-
-```
-TaskStop(<monitor-task-id>)
-Monitor(command="python3 <bin>/client.py --name <new-name>", ...)
-```
-
-Find the monitor-task-id via `TaskList()`.
+Rename = disconnect + reconnect. Run `Bash("python3 <bin>/disconnect.py")`,
+then `Monitor(command="python3 <bin>/client.py --name <new-name>", ...)`.
+If the old `"inter-session messages"` task is still running afterwards,
+`TaskStop(<id>)` with the id the original `Monitor()` call returned.
 
 ## status
 
@@ -321,9 +312,9 @@ Idempotent: a second call on an already-disconnected session prints
    | `disconnected (required SIGTERM after force_disconnect)` | Python didn't exit on 4001 within the grace window; SIGTERM resolved it. |
    | `disconnected (required SIGKILL -- pid <N> was unresponsive). Worth reporting if recurring.` | Python wedged through both 4001 and SIGTERM. Surface loudly. |
 
-2. **Then `TaskList()` → `TaskStop(<id>)` for the `"inter-session messages"`
-   task** if it's still listed. Harness-side cleanup; idempotent and
-   harmless if the python already exited via step 1.
+2. **Then `TaskStop(<id>)`** with the id the `Monitor()` call returned, if
+   the `"inter-session messages"` task is still running. Harness-side
+   cleanup; idempotent and harmless if the python already exited via step 1.
 
 3. **Surface the helper's output verbatim** to the user. Do not paraphrase.
    When the line starts with `disconnected (required SIGKILL`, repeat the
@@ -350,13 +341,13 @@ surface this to the user after running.
 
 | User input                              | Bash                                              |
 | :-------------------------------------- | :------------------------------------------------ |
-| `/inter-session auto-start status`      | `python3 <bin>/auto_start.py --status`            |
-| `/inter-session auto-start on`          | `python3 <bin>/auto_start.py --on`                |
-| `/inter-session auto-start off`         | `python3 <bin>/auto_start.py --off`               |
+| `/is auto-start status`                 | `python3 <bin>/auto_start.py --status`            |
+| `/is auto-start on`                     | `python3 <bin>/auto_start.py --on`                |
+| `/is auto-start off`                    | `python3 <bin>/auto_start.py --off`               |
 
 `on` = `when: "always"` (start at every session open).
 `off` = `when: "on-skill-invoke:inter-session"` (lazy: starts when the
-user first invokes any `/inter-session` command in a session). The
+user first invokes any `/is` command in a session). The
 default for fresh installs is `off` (lazy).
 
 ## Sending long content: use a file pointer
@@ -380,9 +371,6 @@ The peer receives a short line like
 `read and execute the task in the file at /abs/path` (well under the cap),
 opens the file, and acts on the full content. The path is resolved to an
 absolute path and must exist when you send.
-
-When to use this: long instructions, multi-step specs, code to apply,
-anything over a line or two. For a quick one-liner, `--text` is fine.
 
 ## Truncated messages
 

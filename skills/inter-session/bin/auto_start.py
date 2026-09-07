@@ -95,7 +95,7 @@ def cmd_status() -> int:
     if when == ALWAYS:
         label = "ON  (auto-start at every session)"
     elif when == LAZY:
-        label = "OFF (lazy: starts on first /inter-session invocation)"
+        label = "OFF (lazy: starts on first invocation of the skill)"
     else:
         label = f"CUSTOM ({when})"
     print(f"auto-start: {label}")

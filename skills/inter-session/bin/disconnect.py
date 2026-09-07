@@ -311,7 +311,8 @@ if __name__ == "__main__":
     try:
         import websockets  # noqa: F401
     except ImportError:
-        print("dependencies missing -- run /inter-session install-deps",
+        from bin import shared as _shared
+        print(f"dependencies missing -- run {_shared.skill_command()} install-deps",
               file=sys.stderr)
         sys.exit(1)
     sys.exit(main())

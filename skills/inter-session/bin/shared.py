@@ -13,6 +13,30 @@ from urllib.parse import quote
 from pathlib import Path
 
 DEFAULT_PORT = 9473
+
+# Directory of this skill (the parent of bin/), resolved through any symlink.
+SKILL_DIR = Path(__file__).resolve().parent.parent
+
+
+def skill_command() -> str:
+    """Slash-command prefix for this skill as installed on this machine.
+
+    A standalone install triggers on its directory name under
+    ~/.claude/skills (a symlink named `is` yields `/is`); a plugin install
+    triggers on `/inter-session:inter-session`. Used in user-facing notices so
+    they name a command that exists here.
+    """
+    skills_root = Path.home() / ".claude" / "skills"
+    try:
+        for entry in skills_root.iterdir():
+            try:
+                if entry.resolve() == SKILL_DIR:
+                    return f"/{entry.name}"
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return "/inter-session:inter-session"
 WS_FRAME_CAP = 16 * 1024 * 1024
 TEXT_CAP = 10 * 1024 * 1024
 BROADCAST_TEXT_CAP = 256 * 1024

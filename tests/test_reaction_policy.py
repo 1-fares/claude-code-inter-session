@@ -14,8 +14,10 @@ class TestFrontmatter:
 
     def test_allowed_tools(self):
         assert "allowed-tools" in SKILL
-        for tool in ("Bash", "Monitor", "TaskList", "TaskStop"):
+        for tool in ("Bash", "Monitor", "TaskStop"):
             assert tool in SKILL
+        # TaskList is not a Claude Code tool; the skill must not name it.
+        assert "TaskList" not in SKILL
 
 
 class TestSubcommands:
@@ -76,8 +78,10 @@ class TestInstallDepsUx:
 
 
 class TestDedupGuard:
-    def test_tasklist_check_in_connect(self):
-        assert "TaskList()" in SKILL
+    def test_taskstop_check_in_connect(self):
+        # Rename and disconnect stop the old monitor with the task id the
+        # Monitor() call returned; there is no task-listing tool to look it up.
+        assert "TaskStop(<id>)" in SKILL
         assert '"inter-session messages"' in SKILL
 
 
