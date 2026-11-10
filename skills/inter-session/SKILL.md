@@ -160,10 +160,13 @@ directory name the skill is installed under).
    Monitor(
      command="python3 <bin>/client.py --name <name>",
      description="inter-session messages",
-     persistent=true,
-     timeout_ms=3600000
+     timeout_ms=1800000
    )
    ```
+   A monitor expires after at most 30 minutes (`timeout_ms` above 1800000 is
+   capped, and `Monitor` has no `persistent` parameter). On the expiry
+   notice, run the same call again with the same name, unless the user asked
+   to disconnect.
    Don't pass `--port` or `--idle-shutdown-minutes`. `client.py` resolves
    them with this precedence (highest first):
    1. CLI arg (wins if passed)
