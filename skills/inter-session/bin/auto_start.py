@@ -153,7 +153,8 @@ def main(argv: list[str] | None = None) -> int:
             "auto-start is a plugin-only feature and has no effect here: this is "
             "a standalone-skill install (~/.claude/skills/...), where Claude Code "
             "does not read monitors.json. The monitor starts when you first run "
-            "/is in a session; there's nothing to toggle."
+            f"/{Path(__file__).parent.parent.name} in a session; there's nothing "
+            "to toggle."
         )
         return 0
 

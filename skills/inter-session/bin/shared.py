@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import enum
-import errno
 import json
 import os
 import re
@@ -76,13 +75,10 @@ BROADCAST_TEXT_CAP = 256 * 1024
 # clip, but the cont-pointer line is short and always fits, so the LLM
 # still gets the messages.log path for full content.
 STDOUT_CAP = 400
-MAX_HOPS = 4
 PING_INTERVAL_S = 15
-PONG_TIMEOUT_S = 30
 RECONNECT_BACKOFF_MIN_S = 0.25
 RECONNECT_BACKOFF_MAX_S = 4.0
 RECONNECT_JITTER_FRAC = 0.2
-ELECTION_BIND_RETRIES = 8
 BROADCAST_RATE_LIMIT_PER_MIN = 60
 
 # Application-defined WebSocket close code used when the server unregisters a

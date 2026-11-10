@@ -19,6 +19,10 @@ _SERVER_PATH = Path(__file__).parent / "server.py"
 # to finish before giving up and falling back to a TCP probe.
 _ELECTION_WAIT_S = 5.0
 
+# Cap on how long the election winner holds the lock while the server it
+# spawned is alive but not yet listening.
+_SPAWN_WAIT_S = 30.0
+
 
 def is_server_up(host: str, port: int, timeout: float = 0.3) -> bool:
     try:
@@ -163,8 +167,16 @@ def ensure_server_running(
         s.close()
         # Keep the election lock held until the spawned server is actually
         # listening — then any other peer that was waiting for the lock will
-        # find `is_server_up` true the moment they get in.
+        # find `is_server_up` true the moment they get in. Hold it for as
+        # long as the child is alive and not yet listening (up to
+        # _SPAWN_WAIT_S): its socket is bound, so SO_REUSEADDR would let the
+        # next election bind the port too and spawn a second server, whose
+        # identity write replaces this one's and whose failed listen() then
+        # deletes the identity files.
+        deadline = time.time() + _SPAWN_WAIT_S
         ready = wait_for_server(host, port, timeout=5.0)
+        while not ready and proc.poll() is None and time.time() < deadline:
+            ready = wait_for_server(host, port, timeout=0.5)
         log.info("ensure: wait_for_server returned %s", ready)
         return ready
     finally:

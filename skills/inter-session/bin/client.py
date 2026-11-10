@@ -25,7 +25,6 @@ import logging
 import random
 import secrets
 import signal
-import time
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -54,7 +53,9 @@ def _print_line(line: str) -> None:
     sys.stdout.flush()
 
 
-def _format_msg(msg: dict) -> str:
+def _format_msg_parts(msg: dict) -> tuple[str, bool, int]:
+    """Return (line, was_truncated, full_len). The message loop needs all
+    three; sanitizing once matters because a direct message may be 10 MB."""
     sanitized = shared.sanitize_for_stdout(msg.get("text", ""))
     truncated, was_truncated, full_len = shared.truncate_for_stdout(sanitized)
     from_name = msg.get("from_name") or msg.get("from", "?")[:8]
@@ -65,7 +66,11 @@ def _format_msg(msg: dict) -> str:
         prefix = f'[inter-session msg={msg_id} from="{from_name}"{label_part} truncated={full_len}]'
     else:
         prefix = f'[inter-session msg={msg_id} from="{from_name}"{label_part}]'
-    return f"{prefix} {truncated}"
+    return f"{prefix} {truncated}", was_truncated, full_len
+
+
+def _format_msg(msg: dict) -> str:
+    return _format_msg_parts(msg)[0]
 
 
 def _format_truncation_pointer(msg_id: str, full_len: int) -> str:
@@ -314,6 +319,12 @@ class Client:
         # Defense-in-depth against port squatting: refuse to send the bearer
         # token to a process that doesn't claim to be our server.
         if not shared.verify_server_identity(self.host, self.port):
+            if not spawn.is_server_up(self.host, self.port):
+                # Nothing listens: a server slower to start than
+                # ensure_server_running waits for, or one that just exited.
+                # Retry through run()'s backoff loop like a refused connect.
+                raise ConnectionRefusedError(
+                    f"nothing listening on {self.host}:{self.port}")
             _print_line(
                 "[inter-session] server identity check failed "
                 f"(port {self.port} is held by something that isn't bin/server.py); "
@@ -394,10 +405,8 @@ class Client:
                             continue
                         op = payload.get("op")
                         if op == "msg":
-                            line = _format_msg(payload)
+                            line, was_truncated, full_len = _format_msg_parts(payload)
                             _print_line(line)
-                            sanitized = shared.sanitize_for_stdout(payload.get("text", ""))
-                            truncated, was_truncated, full_len = shared.truncate_for_stdout(sanitized)
                             if was_truncated:
                                 _print_line(_format_truncation_pointer(payload.get("msg_id", ""), full_len))
                         elif op in ("peer_joined", "peer_left", "renamed"):
@@ -424,7 +433,8 @@ class Client:
             # breaks instead of looping back into _connect_and_serve.
             if getattr(ws, "close_code", None) == shared.CLOSE_CODE_FORCE_DISCONNECT:
                 _print_line(
-                    "[inter-session] disconnected by /is d (or orphan reap); exiting"
+                    f"[inter-session] disconnected by {shared.skill_command()} d "
+                    "(or orphan reap); exiting"
                 )
                 self._stop.set()
 
@@ -494,11 +504,9 @@ def main() -> int:
     # doesn't have to set INTER_SESSION_NAME). Fall back to a name derived from
     # the cwd basename so the listener doesn't show as `(unnamed)`.
     final_name = args.name
-    auto_named = False
     if not final_name:
         final_name = shared.auto_name_from_cwd()
         if final_name:
-            auto_named = True
             _print_line(
                 f"[inter-session] no --name given; auto-named {final_name!r} "
                 f"from cwd (rename with {shared.skill_command()} rename)"

@@ -96,6 +96,19 @@ class TestFormatMsg:
         assert "\n" not in out  # newline replaced by ↵
         assert "↵" in out
 
+    def test_parts_report_truncation_for_the_cont_line(self):
+        # The message loop takes the line and the truncation facts from one
+        # call, so the text is sanitized once per message.
+        big = "\x1b[1my" + "y" * (shared.STDOUT_CAP + 1000)
+        msg = {"msg_id": "x", "from_name": "alpha", "from_label": "", "text": big}
+        line, was_truncated, full_len = client_mod._format_msg_parts(msg)
+        assert line == client_mod._format_msg(msg)
+        assert was_truncated is True
+        assert full_len == shared.STDOUT_CAP + 1001  # ANSI sequence stripped
+        assert f"truncated={full_len}]" in line
+        small = {"msg_id": "x", "from_name": "alpha", "from_label": "", "text": "hi"}
+        assert client_mod._format_msg_parts(small)[1:] == (False, 2)
+
 
 class TestEnsureServerRunning:
     def test_starts_server_when_absent(self, tmp_data_dir, free_port):
@@ -153,6 +166,67 @@ class TestEnsureServerRunning:
             assert not (tmp_data_dir / f"server.{free_port}.pid.meta").exists()
         finally:
             squat.close()
+
+    _FAKE_SERVER = (
+        "import os, socket, sys, time\n"
+        "fd = int(sys.argv[sys.argv.index('--fd') + 1])\n"
+        "open(os.environ['FAKE_SERVER_PIDFILE'], 'w').write(str(os.getpid()))\n"
+        "time.sleep(float(os.environ['FAKE_SERVER_DELAY']))\n"
+        "if os.environ.get('FAKE_SERVER_EXIT'):\n"
+        "    sys.exit(1)\n"
+        "s = socket.socket(fileno=fd)\n"
+        "s.listen(8)\n"
+        "time.sleep(30)\n"
+    )
+
+    def _ensure_with_fake_server(self, tmp_path, free_port, monkeypatch, delay, exits=False):
+        """Run ensure_server_running with a stand-in server that waits
+        `delay` s before listen() (or exits instead), and with the first
+        wait shortened to 0.3 s so the stand-in counts as slow."""
+        script = tmp_path / "fake_server.py"
+        script.write_text(self._FAKE_SERVER)
+        pidfile = tmp_path / "fake_server.pid"
+        monkeypatch.setenv("FAKE_SERVER_PIDFILE", str(pidfile))
+        monkeypatch.setenv("FAKE_SERVER_DELAY", str(delay))
+        if exits:
+            monkeypatch.setenv("FAKE_SERVER_EXIT", "1")
+        real_wait = spawn.wait_for_server
+        monkeypatch.setattr(
+            spawn, "wait_for_server",
+            lambda host, port, timeout=5.0: real_wait(host, port, min(timeout, 0.3)),
+        )
+        t0 = time.monotonic()
+        try:
+            ok = spawn.ensure_server_running(
+                port=free_port, idle_shutdown_minutes=1, server_path=script,
+            )
+            return ok, time.monotonic() - t0
+        finally:
+            if not exits:
+                try:
+                    os.kill(int(pidfile.read_text()), 9)
+                except (OSError, ValueError):
+                    pass
+
+    def test_holds_election_while_spawned_server_starts(
+        self, tmp_data_dir, tmp_path, free_port, monkeypatch,
+    ):
+        """A server slower to start than the first wait keeps the election
+        lock until it listens. Returning early lets the next election bind
+        the port again and spawn a second server."""
+        shared.secure_dir(tmp_data_dir)
+        ok, _ = self._ensure_with_fake_server(tmp_path, free_port, monkeypatch, delay=1.5)
+        assert ok
+
+    def test_returns_when_spawned_server_exits(
+        self, tmp_data_dir, tmp_path, free_port, monkeypatch,
+    ):
+        shared.secure_dir(tmp_data_dir)
+        ok, elapsed = self._ensure_with_fake_server(
+            tmp_path, free_port, monkeypatch, delay=0.5, exits=True,
+        )
+        assert not ok
+        assert elapsed < 5
 
     def test_custom_host_is_written_to_identity(self, tmp_data_dir, free_port):
         shared.secure_dir(tmp_data_dir)
@@ -236,7 +310,7 @@ class TestNameCollisionAutoRetry:
                     p.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     p.kill()
-            pid_path = tmp_data_dir / "server.pid"
+            pid_path = shared.pidfile_path(free_port)
             if pid_path.exists():
                 try:
                     os.kill(int(pid_path.read_text().strip()), 9)
@@ -279,7 +353,7 @@ class TestNameCollisionAutoRetry:
                     p.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     p.kill()
-            pid_path = tmp_data_dir / "server.pid"
+            pid_path = shared.pidfile_path(free_port)
             if pid_path.exists():
                 try:
                     os.kill(int(pid_path.read_text().strip()), 9)
@@ -351,7 +425,7 @@ class TestReElectionAfterServerCrash:
             except subprocess.TimeoutExpired:
                 client.kill()
             # Cleanup any new server
-            pid_path = tmp_data_dir / "server.pid"
+            pid_path = shared.pidfile_path(free_port)
             if pid_path.exists():
                 try:
                     os.kill(int(pid_path.read_text().strip()), 9)
@@ -469,9 +543,12 @@ class TestForceDisconnectClientExits:
                 )
             assert rc == 0, f"client exited with non-zero rc={rc}"
 
-            # The 4001 path emits a user-visible exit notice on stdout.
+            # The 4001 path emits a user-visible exit notice on stdout, naming
+            # the disconnect command as installed here.
             out = proc.stdout.read() or ""
-            assert "force_disconnect" in out or "/is d" in out, (
+            expected = (f"[inter-session] disconnected by {shared.skill_command()} d "
+                        "(or orphan reap); exiting")
+            assert expected in out, (
                 f"expected force_disconnect notice on client stdout, got:\n{out!r}"
             )
         finally:
@@ -488,6 +565,81 @@ class TestForceDisconnectClientExits:
                     os.kill(pid, 9)
                 except (OSError, ValueError):
                     pass
+
+
+class TestConnectWhenNothingListens:
+    """ensure_server_running returns False when the server it spawned is not
+    listening yet. With nothing on the port the identity check fails on the
+    missing pidfile; the client must retry through its backoff loop instead
+    of refusing for good. A port held by something that is not the bus
+    server is still refused."""
+
+    @pytest.mark.slow
+    async def test_retries_until_server_listens(self, tmp_data_dir, free_port, monkeypatch):
+        shared.secure_dir(tmp_data_dir)
+        attempts = []
+
+        def slow_ensure(port, host, idle_shutdown_minutes):
+            attempts.append(spawn.is_server_up(host, port))
+            return False
+
+        monkeypatch.setattr(spawn, "ensure_server_running", slow_ensure)
+        printed = []
+        monkeypatch.setattr(client_mod, "_print_line", printed.append)
+        ppid = 73001
+        c = client_mod.Client(port=free_port, name="slowpoke", ppid=ppid, owner_pid=-1)
+        run_task = asyncio.create_task(c.run())
+        srv_proc = None
+        try:
+            deadline = time.monotonic() + 5
+            while not attempts and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+            assert attempts == [False], attempts
+            await asyncio.sleep(0.1)
+            assert not run_task.done(), printed
+            # The server comes up late. A real server.py, since the identity
+            # check matches the pidfile's process against bin/server.py.
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(REPO)
+            srv_proc = subprocess.Popen(
+                [sys.executable, str(BIN_DIR / "server.py"),
+                 "--port", str(free_port), "--idle-shutdown-minutes", "1"],
+                env=env, stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            state_path = shared.client_session_path(ppid)
+            deadline = time.monotonic() + 10
+            while not state_path.exists() and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+            assert state_path.exists(), (attempts, printed)
+            assert json.loads(state_path.read_text())["name"] == "slowpoke"
+            assert len(attempts) >= 2
+            assert not any("identity check failed" in line for line in printed), printed
+        finally:
+            c.stop()
+            await asyncio.wait_for(run_task, timeout=5)
+            if srv_proc is not None:
+                srv_proc.terminate()
+                try:
+                    srv_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    srv_proc.kill()
+                    srv_proc.wait()
+
+    async def test_squatter_is_still_refused(self, tmp_data_dir, free_port, monkeypatch):
+        shared.secure_dir(tmp_data_dir)
+        printed = []
+        monkeypatch.setattr(client_mod, "_print_line", printed.append)
+        squat = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        squat.bind(("127.0.0.1", free_port))
+        squat.listen(8)
+        try:
+            c = client_mod.Client(port=free_port, name="alpha", ppid=73002, owner_pid=-1)
+            rc = await asyncio.wait_for(c.run(), timeout=10)
+        finally:
+            squat.close()
+        assert rc == 0
+        assert any("server identity check failed" in line for line in printed), printed
 
 
 class TestPpidLock:

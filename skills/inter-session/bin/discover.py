@@ -60,11 +60,6 @@ def _read_state(path: Path) -> Optional[dict]:
         return None
 
 
-def _walk_via_proc(pid: int) -> Optional[dict]:
-    state, _ = _walk_via_proc_with_path(pid)
-    return state
-
-
 def _walk_via_proc_with_path(pid: int) -> tuple[Optional[dict], Optional[Path]]:
     seen: set[int] = set()
     while pid and pid not in seen:

@@ -158,6 +158,22 @@ class TestStandaloneSkillDetection:
         assert r.returncode == 0
         assert "plugin-only" in r.stdout
 
+    @pytest.mark.parametrize("dirname", ["is", "inter-session"])
+    def test_standalone_notice_names_installed_command(self, tmp_path: Path, dirname: str):
+        # A standalone skill triggers on its directory name, so the notice
+        # must name /<dirname>, not a fixed /is.
+        skill_bin = tmp_path / ".claude" / "skills" / dirname / "bin"
+        skill_bin.mkdir(parents=True)
+        copied = skill_bin / "auto_start.py"
+        copied.write_text(SCRIPT.read_text())
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
+        r = subprocess.run(
+            [sys.executable, str(copied), "--status"],
+            capture_output=True, text=True, env=env,
+        )
+        assert r.returncode == 0
+        assert f"first run /{dirname} in a session" in r.stdout
+
     def test_plugin_root_env_overrides_standalone(self, tmp_path: Path, fake_plugin_root: Path):
         # An explicit CLAUDE_PLUGIN_ROOT means a real plugin/dev context: even
         # when invoked from under ~/.claude/skills, proceed and edit it.
