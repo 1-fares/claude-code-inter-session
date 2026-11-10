@@ -10,7 +10,7 @@
       "name": "inter-session",
       "description": "Inter-agent messaging for Claude Code sessions on the same machine.",
       "source": "./",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "category": "productivity",
       "tags": ["messaging", "agents", "automation"],
       "homepage": "https://github.com/1-fares/claude-code-inter-session",

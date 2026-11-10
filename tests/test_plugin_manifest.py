@@ -14,7 +14,13 @@ class TestPluginJson:
     def test_loads(self):
         cfg = json.loads((REPO / ".claude-plugin" / "plugin.json").read_text())
         assert cfg["name"] == "inter-session"
-        assert cfg["monitors"] == "./monitors/monitors.json"
+        assert cfg["experimental"]["monitors"] == "./monitors/monitors.json"
+
+    def test_monitors_not_at_top_level(self):
+        """`claude plugin validate` reports a top-level `monitors` key as
+        deprecated; the documented place is `experimental.monitors`."""
+        cfg = json.loads((REPO / ".claude-plugin" / "plugin.json").read_text())
+        assert "monitors" not in cfg
 
     def test_no_explicit_skills_key(self):
         """The current plugin schema rejects "skills": ["./"] with

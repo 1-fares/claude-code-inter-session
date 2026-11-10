@@ -173,9 +173,13 @@ are documented in [`CLAUDE.md`](./CLAUDE.md).
 ## Requirements
 
 - Python ≥ 3.10, Claude Code ≥ 2.1.105.
-- Push delivery needs the `Monitor` tool, which is disabled when
-  `DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set
-  (the variable must be **absent**; `0` still counts as set).
+- Push delivery needs the `Monitor` tool. With `DISABLE_TELEMETRY` or
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` set, or on Bedrock, Vertex or
+  Foundry, `Monitor` and plugin monitors need Claude Code 2.1.310 or later
+  (before that a present variable disabled them; `0` counted as set).
+- The plugin declares its monitor under `experimental.monitors` in
+  `plugin.json`. A Claude Code version that does not know that key does
+  not auto-start the listener; `connect` by hand still works.
 
 ## Security
 

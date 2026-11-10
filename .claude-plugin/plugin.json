@@ -1,8 +1,14 @@
 {
   "name": "inter-session",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Inter-agent messaging for Claude Code sessions on the same machine.",
-  "monitors": "./monitors/monitors.json",
+  "author": {
+    "name": "1-fares",
+    "url": "https://github.com/1-fares"
+  },
+  "experimental": {
+    "monitors": "./monitors/monitors.json"
+  },
   "userConfig": {
     "port": {
       "type": "number",
