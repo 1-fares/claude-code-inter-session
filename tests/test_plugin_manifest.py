@@ -50,7 +50,7 @@ class TestMonitorsJson:
     def test_default_when_is_lazy(self):
         """The default ships as 'on-skill-invoke:inter-session' — sessions
         that never use the bus pay nothing. Users who want always-on can
-        flip with `/inter-session auto-start on`.
+        flip with `/inter-session:inter-session auto-start on`.
         """
         m = json.loads((REPO / "monitors" / "monitors.json").read_text())[0]
         assert m["when"] == "on-skill-invoke:inter-session"

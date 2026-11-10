@@ -30,7 +30,7 @@ clean:
 $(DEPS_STAMP): $(DEV_REQS) $(RUNTIME_REQS)
 	@if command -v uv >/dev/null 2>&1; then \
 		echo "Bootstrapping $(VENV) with uv..."; \
-		uv venv $(VENV); \
+		test -x $(PY) || uv venv $(VENV); \
 		uv pip install -p $(VENV) -r $(DEV_REQS); \
 	else \
 		echo "Bootstrapping $(VENV) with python3 -m venv (uv not found)..."; \

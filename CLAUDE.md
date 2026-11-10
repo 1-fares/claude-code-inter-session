@@ -43,7 +43,7 @@ is rejected with "Path escapes plugin directory"). **`bin/` lives
 inside the skill dir** (`skills/inter-session/bin/`). The plugin's
 monitor `when` defaults to `on-skill-invoke:inter-session` (lazy);
 `bin/auto_start.py` flips it to `always` when the user runs
-`/inter-session auto-start on`. Empirically `on-skill-invoke` may not
+`/inter-session:inter-session auto-start on`. Empirically `on-skill-invoke` may not
 reliably auto-spawn a working monitor in current CC versions, so the
 LLM's `Monitor()` call in the skill is what actually establishes the
 connection most of the time.
@@ -78,7 +78,7 @@ Makefile bootstraps it on first use (uv preferred, stdlib `venv` as
 fallback). System Python is never touched.
 
 ```bash
-make test                                    # full suite (~49 s, 197 tests)
+make test                                    # full suite
 make test-fast                               # skip subprocess-spawning tests
 make clean                                   # remove .venv
 ```
@@ -206,8 +206,8 @@ prose so prose edits can't accidentally drop a guardrail.
 - **Don't blanket `pkill -f 'bin/(client|server).py'`** during local
   testing — it will kill real user inter-session monitors running in
   other CC sessions. Target specific pids via the pidfile
-  (`~/.claude/data/inter-session/server.<port>.pid`) or
-  `TaskList()`-derived monitor task IDs.
+  (`~/.claude/data/inter-session/server.<port>.pid`) or the task id
+  your own `Monitor()` call returned.
 - **Don't use `${user_config.*}` substitution in `monitors.json`** —
   see invariant above.
 - **Don't weaken the SKILL.md description** ("pushy" multi-trigger

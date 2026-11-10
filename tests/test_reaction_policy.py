@@ -85,6 +85,17 @@ class TestDedupGuard:
         assert '"inter-session messages"' in SKILL
 
 
+class TestListenerStartedElsewhere:
+    def test_no_kill_of_a_listener_this_session_did_not_start(self):
+        # A project may run client.py under its own supervisor. SKILL.md must
+        # not tell a session to kill a listener it did not start: that kills
+        # the supervisor's listener.
+        assert "kill <listener_pid>" not in SKILL
+        assert 'Bash("kill' not in SKILL
+        assert ("never kill a `listener_pid` this session did not start"
+                in " ".join(SKILL.split()))
+
+
 class TestNameValidation:
     def test_ascii_regex_in_skill(self):
         assert "[a-z0-9]" in SKILL

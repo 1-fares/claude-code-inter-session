@@ -146,6 +146,12 @@ Works the same whether the skill is installed as part of the plugin
 (`/inter-session:inter-session`) or standalone (`/is`, or whatever
 directory name the skill is installed under).
 
+If project instructions start this session's listener another way (a
+supervisor that runs `client.py` itself), follow them for connect, rename
+and disconnect. Do not call `Monitor()` for `client.py`, do not re-arm on
+expiry, and never kill a `listener_pid` this session did not start with
+`Monitor()`. send, broadcast, list and status work unchanged.
+
 1. **Pick a name**:
    - If the user supplied one as `connect <name>`, `c <name>`, or the
      bare shorthand `<name>` (any first arg that isn't a known
@@ -191,12 +197,12 @@ directory name the skill is installed under).
      or `connect`), or **supplied the same name** (`connect <existing>`):
      surface "Connected as `<existing>`." and stop.
    - **User supplied a different name** (`connect <new>` where
-     `<new>` ≠ `<existing>`): treat it as a rename. Stop the existing
-     monitor: `TaskStop(<id>)` with the task id the earlier `Monitor()`
-     call returned in this session; if this session did not start it,
-     `Bash("kill <listener_pid>")` with the pid from the error line. Wait
-     ~1.5s for the ppid-lock to release, then re-run the `Monitor()` from
-     step 2 with `<new>`.
+     `<new>` ≠ `<existing>`): treat it as a rename. If this session did
+     not start the existing monitor with `Monitor()`, report the existing
+     name and its `listener_pid` to the user and stop. Otherwise stop it:
+     `TaskStop(<id>)` with the task id the earlier `Monitor()` call
+     returned in this session. Wait ~1.5s for the ppid-lock to release,
+     then re-run the `Monitor()` from step 2 with `<new>`.
      Reply with "Renamed `<existing>` → `<new>`."
 
 **On `[inter-session] name '…' taken; using '…-2'`**: informational only —
@@ -382,7 +388,7 @@ cap), it arrives in two lines:
 
 ```
 [inter-session msg=q7r8 from="data-pipe" truncated=2097152] <first ~400 chars of text>
-[inter-session msg=q7r8 cont] full text 2.0 MB at ~/.claude/data/inter-session/messages.log
+[inter-session msg=q7r8 cont] full text 2097152 bytes at ~/.claude/data/inter-session/messages.log
 ```
 
 The full payload is in `~/.claude/data/inter-session/messages.log` as a

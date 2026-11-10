@@ -6,7 +6,7 @@ Each session joins a localhost bus and can message any other connected
 session. Incoming messages arrive as prompts and are **acted on as
 instructions by default**, so one session can drive another. Delivery is
 push, not poll — built on Claude Code's `Monitor` tool: millisecond
-latency, and zero token or CPU cost while idle.
+latency, and no token cost while idle.
 
 No claude.ai login. No configuration. Localhost only, Unix only (macOS,
 Linux, WSL2).
@@ -59,7 +59,8 @@ ln -s ~/src/claude-code-inter-session/skills/inter-session ~/.claude/skills/is
 ```
 
 (The symlink target must be an absolute path. Then run `/is` in any
-session — dependencies install themselves on first use.)
+session. On first use it reports missing dependencies and, once you
+confirm, installs them into an isolated venv.)
 
 <details>
 <summary>Install as a plugin instead</summary>
@@ -174,9 +175,7 @@ are documented in [`CLAUDE.md`](./CLAUDE.md).
 - Python ≥ 3.10, Claude Code ≥ 2.1.105.
 - Push delivery needs the `Monitor` tool, which is disabled when
   `DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set
-  (the variable must be **absent**; `0` still counts as set). Without it,
-  the client falls back to poll delivery — the receiver wakes on its next
-  turn instead of instantly.
+  (the variable must be **absent**; `0` still counts as set).
 
 ## Security
 
