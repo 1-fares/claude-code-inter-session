@@ -30,14 +30,20 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-import websockets
-
 # Allow running as a script.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from bin import shared, spawn
+from bin import shared
+
+# Runs after the venv re-exec above. Without websockets, print the
+# documented notice on stdout (the only stream Monitor reports) and exit 0.
+shared.require_runtime_deps(sys.stdout, exit_code=0)
+
+import websockets
+
+from bin import spawn
 
 log = logging.getLogger("inter-session.client")
 
@@ -524,17 +530,11 @@ def main() -> int:
     try:
         return loop.run_until_complete(client.run())
     except ImportError as e:
-        _print_line(f"[inter-session] dependencies missing — run {shared.skill_command()} install-deps ({e})")
+        _print_line(shared.deps_missing_notice(e))
         return 0
     finally:
         loop.close()
 
 
 if __name__ == "__main__":
-    try:
-        import websockets  # noqa: F401
-    except ImportError:
-        from bin import shared as _shared
-        _print_line(f"[inter-session] dependencies missing — run {_shared.skill_command()} install-deps")
-        sys.exit(0)
     sys.exit(main())

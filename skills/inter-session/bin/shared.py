@@ -37,6 +37,33 @@ def skill_command() -> str:
     except OSError:
         pass
     return "/inter-session:inter-session"
+
+
+def deps_missing_notice(exc: ImportError) -> str:
+    """The `[inter-session] dependencies missing` notice documented in SKILL.md."""
+    return (f"[inter-session] dependencies missing: run {skill_command()} "
+            f"install-deps ({exc})")
+
+
+def require_runtime_deps(stream, exit_code: int) -> None:
+    """Write the dependencies-missing notice to `stream` and exit with
+    `exit_code` if websockets cannot be imported.
+
+    Entry points call this after their venv re-exec bootstrap and before
+    their module-level `import websockets`, so a Python without the runtime
+    deps (no venv yet, or after a venv reset) prints the notice instead of
+    a ModuleNotFoundError traceback. client.py passes stdout, the only
+    stream a Monitor reports; the control CLIs pass stderr. psutil is not
+    checked: every use of it has a fallback for when it is absent.
+    """
+    try:
+        import websockets  # noqa: F401
+    except ImportError as e:
+        stream.write(deps_missing_notice(e) + "\n")
+        stream.flush()
+        raise SystemExit(exit_code)
+
+
 WS_FRAME_CAP = 16 * 1024 * 1024
 TEXT_CAP = 10 * 1024 * 1024
 BROADCAST_TEXT_CAP = 256 * 1024

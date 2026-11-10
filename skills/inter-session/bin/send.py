@@ -23,9 +23,16 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from bin import shared
+
+# Runs after the venv re-exec above. Without websockets, print the
+# documented notice on stderr (stdout is reserved for the success line)
+# and exit 1 instead of a traceback.
+shared.require_runtime_deps(sys.stderr, exit_code=1)
+
 import websockets
 
-from bin import shared, discover
+from bin import discover
 
 
 def _compose_text(text, file) -> str:
@@ -153,10 +160,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    try:
-        import websockets  # noqa: F401
-    except ImportError:
-        from bin import shared as _shared
-        print(f"dependencies missing — run {_shared.skill_command()} install-deps", file=sys.stderr)
-        sys.exit(1)
     sys.exit(main())
