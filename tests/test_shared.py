@@ -3,12 +3,20 @@ import os
 import stat
 import sys
 import threading
+import time
 import types
 from pathlib import Path
 
 import pytest
 
 from bin import shared
+from tests.proctree import (
+    chain_argv,
+    chain_env,
+    run_probe,
+    standins,  # noqa: F401  (fixture)
+    wait_chain,
+)
 
 
 class TestValidateName:
@@ -286,12 +294,47 @@ class TestResolveListenerKey:
 
 
 class TestFindCcAncestorPid:
-    def test_returns_int(self):
-        # In test env there's no CC ancestor; -1 is expected.
-        # In real CC, returns a positive pid.
-        result = shared.find_cc_ancestor_pid()
-        assert isinstance(result, int)
-        assert result == -1 or result > 0
+    """Process trees built from stand-ins (tests/proctree.py): the result
+    does not depend on whether the suite itself runs under Claude Code."""
+
+    def test_finds_the_nearest_session(self, standins, tmp_data_dir):
+        r = run_probe(standins, [standins["claude"], standins["sh"],
+                                 standins["claude"], standins["sh"]])
+        assert r["cc"] == r["chain"][2], r
+
+    def test_minus_one_without_a_session(self, standins, tmp_data_dir):
+        r = run_probe(standins, [standins["sh"]], detached=True)
+        assert r["cc"] == -1, r
+        assert r["cc_strict"] == -1, r
+
+    def test_start_pid_is_examined_first(self, standins, tmp_path):
+        import subprocess
+        import psutil
+        pids = tmp_path / "pids"
+        proc = subprocess.Popen(
+            chain_argv([standins["claude"]], ["sleep", "30"]),
+            env=chain_env({"CHAIN_PIDS": str(pids)}),
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
+        kids = []
+        try:
+            (standin,) = wait_chain(pids, 1)
+            assert standin == proc.pid
+            end = time.monotonic() + 5
+            while not kids and time.monotonic() < end:
+                kids = psutil.Process(standin).children()
+                time.sleep(0.05)
+            assert kids, "stand-in started no child"
+            assert shared.find_cc_ancestor_pid(start_pid=standin, strict=True) == standin
+            assert shared.find_cc_ancestor_pid(start_pid=kids[0].pid) == standin
+        finally:
+            for k in kids:
+                try:
+                    k.kill()
+                except psutil.NoSuchProcess:
+                    pass
+            proc.kill()
+            proc.wait(timeout=5)
 
 
 class TestAutoNameFromCwd:
@@ -598,3 +641,19 @@ class TestRotateLogRetention:
         assert "v1" in (tmp_path / "x.log.3").read_text()
         assert "v2" in (tmp_path / "x.log.2").read_text()
         assert "v3" in (tmp_path / "x.log.1").read_text()
+
+
+class TestSendTimeout:
+    def test_unset_is_the_default(self, monkeypatch):
+        monkeypatch.delenv("INTER_SESSION_SEND_TIMEOUT_S", raising=False)
+        assert shared.send_timeout_s() == shared.SEND_TIMEOUT_S
+
+    @pytest.mark.parametrize("raw,expected", [("12", 12.0), ("0.25", 0.25), (" 3 ", 3.0)])
+    def test_finite_positive_value_is_used(self, monkeypatch, raw, expected):
+        monkeypatch.setenv("INTER_SESSION_SEND_TIMEOUT_S", raw)
+        assert shared.send_timeout_s() == expected
+
+    @pytest.mark.parametrize("raw", ["", "0", "-1", "nan", "inf", "-inf", "abc"])
+    def test_other_values_give_the_default(self, monkeypatch, raw):
+        monkeypatch.setenv("INTER_SESSION_SEND_TIMEOUT_S", raw)
+        assert shared.send_timeout_s() == shared.SEND_TIMEOUT_S

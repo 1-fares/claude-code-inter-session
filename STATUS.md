@@ -23,6 +23,28 @@ architecture lives in `CLAUDE.md`.
 - **Security guards left in place.** A single-user relaxation (drop the
   control-nonce check and the client-side server-identity verification)
   was tried, then reverted. Both guards are active.
+- **A peer that stops reading no longer stalls the bus.** Each peer has
+  its own queue and writer in `server.py`; every write is bounded by
+  `SEND_TIMEOUT_S` (5 s, `INTER_SESSION_SEND_TIMEOUT_S`). A frame counts
+  as written only once the kernel holds all of it (`write_limit=0`), so
+  dropping a peer does not discard a message already reported as
+  delivered. A peer whose write times out is dropped and the sender of a
+  direct message gets `delivery_timeout`. A direct message that waited
+  the whole bound in a slow peer's queue is not written: its sender gets
+  `delivery_timeout` and the peer stays connected. The outcome of a direct
+  message is known within twice the bound. Before, the message was lost
+  and reported as sent.
+- **`send.py` reports the real outcome.** A `ping` follows the message on
+  the same connection: `pong` means delivered, an error before it is the
+  send's. A success returns at once (it waited one second before). No
+  answer within twice the bound plus one second (11 s by default) is an
+  error (`no_answer`, delivery unknown), and so is a connection the bus
+  closes during the wait (`connection_closed`); neither counts as a
+  success. `send.py` reads the bound from the same setting as the server.
+- **A nested session does not use the outer session's listener.**
+  `discover.py` stops at the nearest process that is certainly Claude
+  Code, so a `claude -p` started from a session's shell reports "not
+  connected" instead of sending under the outer session's name.
 - **auto-start** is now a clear no-op in standalone-skill mode instead of
   silently editing the repo's `monitors.json` through the symlink.
 
@@ -30,12 +52,11 @@ architecture lives in `CLAUDE.md`.
 
 - The receiver only reacts on its own when the `Monitor` tool is present
   (per-line push). `client.py` has no other delivery mode.
-- `Monitor` is unavailable if **either** `DISABLE_TELEMETRY` or
-  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set. Setting them to
-  `"0"` is not enough, Claude Code treats a present variable as set, so
-  they must be **absent** from settings/env. Enabling Monitor re-enables
-  Anthropic operational metrics only (no code/paths); error reporting,
-  surveys, and bug command stay off via their own flags.
+- With `DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`
+  set, `Monitor` and plugin monitors need Claude Code 2.1.310 or later
+  (Claude Code tools reference). On an older version a present variable
+  disables `Monitor`, also when set to `"0"`, so there it must be
+  **absent** from settings/env.
 
 ## Test status
 

@@ -45,6 +45,26 @@ log = logging.getLogger("inter-session.server")
 # Longest name shared.NAME_RE accepts.
 _NAME_MAX_LEN = 40
 
+# On shutdown, time each connection gets to finish its close handshake
+# (capped by the send timeout) before it is aborted.
+_SHUTDOWN_GRACE_S = 2.0
+
+
+def _env_seconds(name: str, default: float) -> float:
+    """Seconds from environment variable `name`; `default` when it is unset,
+    empty or not a number."""
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _who(state: "ClientState") -> str:
+    return state.name or state.session_id[:8]
+
 
 def _name_candidates(name: str, taken: set, count: int = 3) -> list[str]:
     """Up to `count` names `<name>-<i>` (i >= 2) that are valid and not in
@@ -71,6 +91,16 @@ class ClientState:
     nonce: str
     ws: WebSocketServerProtocol
     since: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
+    # Agents only: frames for this peer, written in order by one writer task,
+    # so that no handler waits on this peer's socket. Items are
+    # (payload, future, queued_at); queued_at is None for a frame that does
+    # not expire. None stops the writer.
+    outbox: Optional[asyncio.Queue] = None
+    outbox_bytes: int = 0
+    # No more frames are queued (unregistered or dropped).
+    closing: bool = False
+    # Dropped because a frame was not taken within the send timeout.
+    timed_out: bool = False
 
 
 class Server:
@@ -110,6 +140,20 @@ class Server:
             int(env_threshold) if env_threshold is not None
             else (reap_miss_threshold if reap_miss_threshold is not None else shared.REAP_MISS_THRESHOLD)
         )
+        # Bound on every frame write to a peer, and on a direct message's
+        # wait in the recipient's queue.
+        self._send_timeout_s: float = shared.send_timeout_s()
+        # websockets keepalive; <=0 disables.
+        ping_interval = _env_seconds(
+            "INTER_SESSION_WS_PING_INTERVAL_S", shared.WS_PING_INTERVAL_S)
+        ping_timeout = _env_seconds(
+            "INTER_SESSION_WS_PING_TIMEOUT_S", shared.WS_PING_TIMEOUT_S)
+        self._ws_ping_interval_s: Optional[float] = ping_interval if ping_interval > 0 else None
+        self._ws_ping_timeout_s: Optional[float] = ping_timeout if ping_timeout > 0 else None
+        # Connection -> state, for every connection past its hello.
+        self._links: dict = {}
+        # Writers and closes; cancelled on shutdown.
+        self._bg_tasks: set = set()
 
     async def serve(self) -> None:
         shared.secure_dir(shared.data_dir())
@@ -135,7 +179,18 @@ class Server:
             listen_sock.listen(socket.SOMAXCONN)
             listen_sock.setblocking(False)
 
-            kwargs = dict(max_size=shared.WS_FRAME_CAP, max_queue=1, ping_interval=None)
+            # close_timeout bounds the library's own close handshakes (after a
+            # keepalive failure, or when a handler returns) like any send.
+            # write_limit=0: ws.send returns only once the kernel holds the
+            # whole frame. With the default 64 KiB, it returned while part of
+            # the frame was still in asyncio's buffer, which the abort of a
+            # dropped peer discards, so a message reported as written could
+            # be lost. The kernel's buffer survives the abort.
+            kwargs = dict(max_size=shared.WS_FRAME_CAP, max_queue=1,
+                          ping_interval=self._ws_ping_interval_s,
+                          ping_timeout=self._ws_ping_timeout_s,
+                          close_timeout=self._send_timeout_s,
+                          write_limit=0)
             server = await websockets.serve(self._handler, sock=listen_sock, **kwargs)
         except Exception:
             listen_sock.close()
@@ -153,11 +208,36 @@ class Server:
             idle_task.cancel()
             reap_task.cancel()
             server.close()
+            await self._abort_unclosed(server)
             await server.wait_closed()
+            tasks = list(self._bg_tasks)
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.wait(tasks, timeout=1.0)
             # Only remove the pidfile/meta if they still belong to this server
             # — avoids race where a fresh server has already taken over the
             # endpoint and rewritten identity before we exit cleanup.
             self._unlink_own_identity()
+
+    async def _abort_unclosed(self, server) -> None:
+        """Shutdown: give each connection a short grace to finish the close
+        handshake that server.close() starts, then abort the rest. A peer
+        that does not read never answers, and the library would otherwise
+        wait up to four times its close timeout for it."""
+        conns = list(getattr(server, "websockets", ()))
+        if not conns:
+            return
+        waits = [asyncio.ensure_future(ws.wait_closed()) for ws in conns]
+        _done, pending = await asyncio.wait(
+            waits, timeout=min(self._send_timeout_s, _SHUTDOWN_GRACE_S))
+        for ws in conns:
+            if not ws.closed:
+                transport = getattr(ws, "transport", None)
+                if transport is not None:
+                    transport.abort()
+        for w in pending:
+            w.cancel()
 
     def _unlink_own_identity(self) -> None:
         for p in (
@@ -307,13 +387,8 @@ class Server:
                         {"op": "peer_left", "session_id": state.session_id},
                         exclude=state.session_id,
                     )
-                    try:
-                        await state.ws.close(
-                            code=shared.CLOSE_CODE_FORCE_DISCONNECT,
-                            reason="orphan reap",
-                        )
-                    except Exception:
-                        pass
+                    self._spawn(self._close_bounded(
+                        state.ws, shared.CLOSE_CODE_FORCE_DISCONNECT, "orphan reap"))
                     log.info(
                         "orphan-reap evicted sid=%s name=%s pid=%s",
                         state.session_id, state.name, state.pid,
@@ -349,8 +424,14 @@ class Server:
             if state is None:
                 return
             await self._dispatch_loop(state)
-        except websockets.ConnectionClosed:
-            pass
+        except websockets.ConnectionClosed as e:
+            sent = getattr(e, "sent", None)
+            if (state is not None and getattr(e, "rcvd", None) is None
+                    and sent is not None and sent.code == 1011
+                    and sent.reason == "keepalive ping timeout"):
+                log.warning("dropping %s %r (sid=%s): no pong within %gs",
+                            state.role.value, state.name, state.session_id[:8],
+                            self._ws_ping_timeout_s)
         except Exception as e:
             log.exception("handler error: %s", e)
         finally:
@@ -431,16 +512,17 @@ class Server:
                         ws=ws,
                     )
                     ctrl_state._for_session = for_session  # type: ignore[attr-defined]
+                    self._links[ws] = ctrl_state
             if reject is not None:
                 code, message = reject
                 await self._send_error(ws, code, message)
                 return None
-            await ws.send(json.dumps({
+            await self._send_frame(ws, {
                 "op": "welcome",
                 "session_id": ctrl_state.session_id,
                 "assigned_name": listener_name,
                 "for_session": for_session,
-            }))
+            })
             return ctrl_state
 
         # Agent role
@@ -498,21 +580,20 @@ class Server:
                 )
                 self._registry[sid] = state
                 self._last_activity = time.monotonic()
+                # Queued under the lock, so no frame for this peer can get
+                # ahead of its welcome.
+                self._start_writer(state, json.dumps({
+                    "op": "welcome",
+                    "session_id": sid,
+                    "assigned_name": name,
+                }))
         # Lock released — now do any blocking network work.
         if reject is not None:
             code, message, extras = reject
             await self._send_error(ws, code, message, **extras)
             return None
         if old_ws_to_close is not None:
-            try:
-                await old_ws_to_close.close(code=4000, reason="replaced")
-            except Exception:
-                pass
-        await ws.send(json.dumps({
-            "op": "welcome",
-            "session_id": sid,
-            "assigned_name": name,
-        }))
+            self._spawn(self._close_bounded(old_ws_to_close, 4000, "replaced"))
         await self._broadcast_event({"op": "peer_joined", "session_id": sid, "name": name},
                                     exclude=sid)
         return state
@@ -530,7 +611,7 @@ class Server:
                 continue
             op = payload.get("op")
             if op == "ping":
-                await state.ws.send(json.dumps({"op": "pong"}))
+                await self._send_frame(state.ws, {"op": "pong"})
             elif op == "list":
                 await self._handle_list(state)
             elif op == "send":
@@ -572,7 +653,7 @@ class Server:
             code, message = reject
             await self._send_error(state.ws, code, message)
             return
-        await state.ws.send(json.dumps({"op": "list_ok", "sessions": sessions}))
+        await self._send_frame(state.ws, {"op": "list_ok", "sessions": sessions})
 
     def _from_id_for(self, state: ClientState) -> str:
         if state.role == shared.Role.CONTROL:
@@ -695,8 +776,18 @@ class Server:
             "ts": datetime.now(tz=timezone.utc).isoformat(),
         }
         self._log_message(msg, kind="direct")
-        await self._safe_send(target_state, msg)
+        # The recipient's writer delivers it; only this sender waits for the
+        # outcome. The writer takes the message out of the queue within the
+        # send timeout or reports delivery_timeout, and bounds its write by
+        # the send timeout, so the outcome is known within twice the send
+        # timeout. Its error frame must come ahead of the reply to the
+        # sender's next frame: send.py reads the outcome from that order.
+        fut = self._enqueue(target_state, json.dumps(msg), expires=True)
+        failure = self._not_queued(target_state) if fut is None else await fut
         self._last_activity = time.monotonic()
+        if failure is not None:
+            code, message = failure
+            await self._send_error(state.ws, code, message)
 
     async def _handle_broadcast(self, state: ClientState, payload) -> None:
         text = payload.get("text", "")
@@ -745,8 +836,9 @@ class Server:
             "ts": datetime.now(tz=timezone.utc).isoformat(),
         }
         self._log_message(msg, kind="broadcast")
+        payload = json.dumps(msg)
         for target in targets:
-            await self._safe_send(target, msg)
+            self._enqueue(target, payload)
         self._last_activity = time.monotonic()
 
     def _log_message(self, msg: dict, kind: str) -> None:
@@ -812,7 +904,7 @@ class Server:
             code, message = reject
             await self._send_error(state.ws, code, message)
             return
-        await state.ws.send(json.dumps({"op": "renamed", "name": new_name}))
+        await self._send_frame(state.ws, {"op": "renamed", "name": new_name})
         await self._broadcast_event(
             {"op": "renamed", "session_id": target_sid, "name": new_name},
             exclude=target_sid,
@@ -850,38 +942,28 @@ class Server:
         if target is None:
             # Already gone — idempotent ack so the caller still gets a clean
             # reply (e.g. when /is d races a parallel client-side close).
-            try:
-                await state.ws.send(json.dumps({
-                    "op": "force_disconnect_ok",
-                    "session_id": target_sid,
-                    "was_present": False,
-                }))
-            except websockets.ConnectionClosed:
-                pass
+            await self._send_frame(state.ws, {
+                "op": "force_disconnect_ok",
+                "session_id": target_sid,
+                "was_present": False,
+            })
             return
         # Order: announce peer_left before closing the target ws, so other
         # peers see the departure cleanly. The target's own _handler finally
         # will also call _unregister, but its identity check is a no-op since
-        # we already popped.
+        # we already popped. The close runs in its own task: a target that
+        # does not read must not hold up this control connection.
         await self._broadcast_event(
             {"op": "peer_left", "session_id": target_sid},
             exclude=target_sid,
         )
-        try:
-            await target.ws.close(
-                code=shared.CLOSE_CODE_FORCE_DISCONNECT,
-                reason="session ended by owner",
-            )
-        except Exception:
-            pass
-        try:
-            await state.ws.send(json.dumps({
-                "op": "force_disconnect_ok",
-                "session_id": target_sid,
-                "was_present": True,
-            }))
-        except websockets.ConnectionClosed:
-            pass
+        self._spawn(self._close_bounded(
+            target.ws, shared.CLOSE_CODE_FORCE_DISCONNECT, "session ended by owner"))
+        await self._send_frame(state.ws, {
+            "op": "force_disconnect_ok",
+            "session_id": target_sid,
+            "was_present": True,
+        })
 
     async def _broadcast_event(self, msg: dict, exclude: Optional[str] = None) -> None:
         async with self._registry_lock:
@@ -889,18 +971,159 @@ class Server:
                        if c.role == shared.Role.AGENT and c.session_id != exclude]
         payload = json.dumps(msg)
         for c in targets:
-            try:
-                await c.ws.send(payload)
-            except websockets.ConnectionClosed:
-                pass
+            self._enqueue(c, payload)
 
-    async def _safe_send(self, target: ClientState, msg: dict) -> None:
+    def _spawn(self, coro) -> None:
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+
+    def _start_writer(self, state: ClientState, first: str) -> None:
+        """Give an agent its outbox with `first` as the first frame, and the
+        task that writes it."""
+        state.outbox = asyncio.Queue()
+        self._links[state.ws] = state
+        self._enqueue(state, first)
+        self._spawn(self._write_loop(state))
+
+    def _stop_writer(self, state: ClientState) -> None:
+        """Queue nothing more for `state`; its writer ends after the frames
+        already queued."""
+        if self._links.get(state.ws) is state:
+            self._links.pop(state.ws, None)
+        if state.outbox is not None and not state.closing:
+            state.closing = True
+            state.outbox.put_nowait(None)
+
+    def _enqueue(self, peer: ClientState, payload: str,
+                 expires: bool = False) -> Optional[asyncio.Future]:
+        """Queue one frame for `peer` without waiting. The future resolves to
+        None once the frame is written, or to an (error code, message) pair
+        when it is not. With `expires`, the frame is not written once it has
+        waited the send timeout in the queue. Returns None if nothing was
+        queued: the peer is closing, or it already holds OUTBOX_MAX_BYTES it
+        has not taken."""
+        if peer.outbox is None or peer.closing:
+            return None
+        if peer.outbox_bytes + len(payload) > shared.OUTBOX_MAX_BYTES:
+            return None
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        peer.outbox_bytes += len(payload)
+        peer.outbox.put_nowait((payload, fut, loop.time() if expires else None))
+        return fut
+
+    async def _write_loop(self, peer: ClientState) -> None:
+        """Write `peer`'s queued frames in order, each bounded by the send
+        timeout. Frames behind one that timed out are not written. An
+        expiring frame that waited the send timeout in the queue is not
+        written either; the peer stays connected."""
+        loop = asyncio.get_running_loop()
+        while True:
+            item = await peer.outbox.get()
+            if item is None:
+                return
+            payload, fut, queued_at = item
+            peer.outbox_bytes -= len(payload)
+            waited = 0.0 if queued_at is None else loop.time() - queued_at
+            if not peer.timed_out and waited >= self._send_timeout_s:
+                if not fut.done():
+                    fut.set_result((
+                        shared.ErrorCode.DELIVERY_TIMEOUT,
+                        f"message to {_who(peer)} waited {waited:.1f}s behind "
+                        "other frames and was not delivered"))
+                continue
+            try:
+                written = not peer.timed_out and await self._send_bounded(
+                    peer.ws, payload, peer)
+            except Exception:
+                log.exception("write to %r failed", _who(peer))
+                written = False
+            if written:
+                failure = None
+            elif peer.timed_out:
+                failure = self._timeout_failure(peer)
+            else:
+                failure = (shared.ErrorCode.UNKNOWN_PEER,
+                           f"{_who(peer)} disconnected before delivery")
+            if not fut.done():
+                fut.set_result(failure)
+
+    def _timeout_failure(self, peer: ClientState) -> tuple[str, str]:
+        return (shared.ErrorCode.DELIVERY_TIMEOUT,
+                f"{_who(peer)} took no data within {self._send_timeout_s:g}s "
+                "and was disconnected; message not delivered")
+
+    def _not_queued(self, peer: ClientState) -> tuple[str, str]:
+        if peer.timed_out:
+            return self._timeout_failure(peer)
+        if peer.closing:
+            return (shared.ErrorCode.UNKNOWN_PEER,
+                    f"{_who(peer)} disconnected before delivery")
+        return (shared.ErrorCode.DELIVERY_TIMEOUT,
+                f"{_who(peer)} is not taking data; message not delivered")
+
+    async def _send_bounded(self, ws, payload: str,
+                            peer: Optional[ClientState] = None) -> bool:
+        """Write one frame to `ws` within the send timeout. On timeout the
+        connection is dropped. True if the frame was written."""
         try:
-            await target.ws.send(json.dumps(msg))
+            await asyncio.wait_for(ws.send(payload), timeout=self._send_timeout_s)
+        except asyncio.TimeoutError:
+            await self._drop(ws, peer)
+            return False
         except websockets.ConnectionClosed:
-            pass
+            return False
+        # A drop while this send waited wakes it as if the frame was written.
+        return not (peer is not None and peer.timed_out)
+
+    async def _drop(self, ws, peer: Optional[ClientState]) -> None:
+        """Abort a connection that took no frame within the send timeout and
+        unregister its peer. Logs one line, without the frame."""
+        transport = getattr(ws, "transport", None)
+        if peer is not None:
+            if peer.timed_out:
+                return
+            peer.timed_out = True
+            log.warning("dropping %s %r (sid=%s): no data taken within %gs",
+                        peer.role.value, peer.name, peer.session_id[:8],
+                        self._send_timeout_s)
+        elif transport is not None and not transport.is_closing():
+            log.warning("dropping unregistered connection: no data taken within %gs",
+                        self._send_timeout_s)
+        if transport is not None:
+            transport.abort()
+        if peer is not None:
+            await self._unregister(peer)
+
+    async def _close_bounded(self, ws, code: int, reason: str) -> None:
+        """Close `ws`, aborting it if the close handshake has not finished
+        within the send timeout: a peer that does not read never answers."""
+        task = asyncio.ensure_future(ws.close(code=code, reason=reason))
+        try:
+            done, _ = await asyncio.wait({task}, timeout=self._send_timeout_s)
+            if not done:
+                await self._drop(ws, self._links.get(ws))
+                await asyncio.wait({task}, timeout=self._send_timeout_s)
+        finally:
+            if not task.done():
+                task.cancel()
+            elif not task.cancelled():
+                task.exception()  # retrieve it; a failed close needs no report
+
+    async def _send_frame(self, ws, frame: dict) -> None:
+        """Send one frame to connection `ws`. A registered agent gets it
+        through its outbox and this does not wait; any other connection is
+        written to directly, within the send timeout."""
+        payload = json.dumps(frame)
+        peer = self._links.get(ws)
+        if peer is not None and peer.outbox is not None:
+            self._enqueue(peer, payload)
+            return
+        await self._send_bounded(ws, payload, peer)
 
     async def _unregister(self, state: ClientState) -> None:
+        self._stop_writer(state)
         async with self._registry_lock:
             current = self._registry.get(state.session_id)
             if current is state:
@@ -916,10 +1139,7 @@ class Server:
             )
 
     async def _send_error(self, ws, code: str, message: str, **extra) -> None:
-        try:
-            await ws.send(json.dumps({"op": "error", "code": code, "message": message, **extra}))
-        except websockets.ConnectionClosed:
-            pass
+        await self._send_frame(ws, {"op": "error", "code": code, "message": message, **extra})
 
 
 def main() -> int:

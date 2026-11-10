@@ -23,6 +23,13 @@ def find_listener_state_with_path(
     (None, None) if no listener is found. The caller can use `path` to
     clean up a stale state file (e.g., when the server reports
     `unknown_peer` on hello).
+
+    The walk up the process tree ends at the nearest process that is
+    certainly Claude Code (`find_cc_ancestor_pid(strict=True)`): a session
+    started from another session's shell (`claude -p` run by a Bash tool)
+    with no listener of its own is not connected, rather than acting as
+    the outer session. With no such process in the tree (cron, a plain
+    terminal) the walk runs to the root.
     """
     key = shared.resolve_listener_key()
     direct_path = shared.client_session_path(key)
@@ -36,6 +43,7 @@ def find_listener_state_with_path(
         return _walk_via_proc_with_path(start_pid or os.getpid())
 
     pid = start_pid or os.getpid()
+    session_pid = shared.find_cc_ancestor_pid(start_pid=pid, strict=True)
     seen: set[int] = set()
     while pid and pid not in seen:
         seen.add(pid)
@@ -43,6 +51,8 @@ def find_listener_state_with_path(
         state = _read_state(path)
         if state is not None:
             return state, path
+        if pid == session_pid:
+            return None, None
         try:
             p = psutil.Process(pid)
             pid = p.ppid()

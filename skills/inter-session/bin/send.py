@@ -88,6 +88,61 @@ def _compose_text(text, file) -> str:
     return text
 
 
+# Upper bound in seconds on waiting for the outcome of a send or broadcast.
+# The server reports a failed delivery before it answers the `ping` that
+# follows, and knows the outcome of a direct message within twice its send
+# timeout (at most one bound waiting in the recipient's queue, at most one
+# for the write), so the wait has to outlast that; a success is answered at
+# once. shared.send_timeout_s() reads the same setting as the server. No
+# answer at all within the wait is reported as an error: a bus that does not
+# answer cannot have confirmed the delivery.
+_OUTCOME_WAIT_S = 2 * shared.send_timeout_s() + 1.0
+
+# Upper bound in seconds on the bus's answer to the hello. A bus that took
+# the connection and then said nothing held the sender without end.
+_WELCOME_WAIT_S = 5.0
+
+
+async def _await_outcome(ws):
+    """The send's `error` frame, or None once the send went through.
+
+    The server answers a successful send or broadcast with nothing, so every
+    success used to wait out the whole timed wait. The server handles one
+    connection's frames in order and writes a send's error before it reads
+    the next frame, so a `ping` sent right behind the send is answered only
+    after the send was handled: `pong` first means sent, an `error` first is
+    the send's. The server answers `ping` with `pong` on every connection,
+    without a check that could fail. Other frames are skipped. When the bus
+    sends neither frame within the bound, a `no_answer` error is returned;
+    when it closes the connection, a `connection_closed` error."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _OUTCOME_WAIT_S
+    try:
+        await ws.send(json.dumps({"op": "ping"}))
+        while True:
+            left = deadline - loop.time()
+            if left <= 0:
+                raise asyncio.TimeoutError
+            raw = await asyncio.wait_for(ws.recv(), timeout=left)
+            try:
+                frame = json.loads(raw)
+            except ValueError:
+                continue
+            if not isinstance(frame, dict):
+                continue
+            if frame.get("op") == "pong":
+                return None
+            if frame.get("op") == "error":
+                return frame
+    except asyncio.TimeoutError:
+        return {"op": "error", "code": "no_answer",
+                "message": f"no answer from the bus within "
+                           f"{_OUTCOME_WAIT_S:g}s; delivery unknown"}
+    except websockets.ConnectionClosed:
+        return {"op": "error", "code": "connection_closed",
+                "message": "the bus closed the connection; delivery unknown"}
+
+
 async def _run(args) -> int:
     state, state_path = discover.find_listener_state_with_path()
     if state is None:
@@ -109,6 +164,7 @@ async def _run(args) -> int:
     try:
         ws = await websockets.connect(
             f"ws://{host}:{port}/", max_size=shared.WS_FRAME_CAP,
+            close_timeout=2,
         )
     except OSError as e:
         print(f"connect failed: {e}", file=sys.stderr)
@@ -127,7 +183,7 @@ async def _run(args) -> int:
             "nonce": nonce,
             "token": token,
         }))
-        welcome_raw = await ws.recv()
+        welcome_raw = await asyncio.wait_for(ws.recv(), timeout=_WELCOME_WAIT_S)
         welcome = json.loads(welcome_raw)
         if welcome.get("op") == "error":
             code = welcome.get("code", "")
@@ -150,20 +206,25 @@ async def _run(args) -> int:
             payload["to"] = args.to
         await ws.send(json.dumps(payload))
 
-        # Wait briefly for an error frame; success is silence.
-        try:
-            resp_raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
-            resp = json.loads(resp_raw)
-            if resp.get("op") == "error":
-                msg = f"error: {resp.get('code', '')}: {resp.get('message', '')}"
-                if "matches" in resp:
-                    msg += f" (matches: {', '.join(resp['matches'])})"
-                if "candidates" in resp:
-                    msg += f" (try: {', '.join(resp['candidates'])})"
-                print(msg, file=sys.stderr)
-                return 1
-        except asyncio.TimeoutError:
-            pass
+        resp = await _await_outcome(ws)
+        if resp is not None:
+            msg = f"error: {resp.get('code', '')}: {resp.get('message', '')}"
+            if "matches" in resp:
+                msg += f" (matches: {', '.join(resp['matches'])})"
+            if "candidates" in resp:
+                msg += f" (try: {', '.join(resp['candidates'])})"
+            print(msg, file=sys.stderr)
+            return 1
+    except websockets.ConnectionClosed:
+        # Closed during the hello, the welcome or the send itself; a close
+        # after the send is reported by _await_outcome.
+        print("error: connection_closed: the bus closed the connection "
+              "before the message was confirmed", file=sys.stderr)
+        return 1
+    except asyncio.TimeoutError:
+        print(f"error: no_answer: no welcome from the bus within "
+              f"{_WELCOME_WAIT_S:g}s; nothing sent", file=sys.stderr)
+        return 1
     finally:
         await ws.close()
     # Emit an explicit success line on stdout. Previously a successful send

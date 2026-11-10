@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from bin import shared, client as client_mod
+from tests.proctree import run_probe, standins  # noqa: F401  (fixture)
 
 REPO = Path(__file__).resolve().parent.parent
 BIN_DIR = REPO / "skills" / "inter-session" / "bin"
@@ -70,15 +71,20 @@ def _kill_server(port: int):
 
 class TestOwnerPidResolution:
     """Without an explicit owner_pid, Client falls back to
-    find_cc_ancestor_pid(). In tests there's no `claude` ancestor, so the
-    fallback returns -1 and the watch should be disabled."""
+    find_cc_ancestor_pid(): the session's pid under Claude Code, -1 (watch
+    disabled) outside it. Both cases run under stand-in process trees, so
+    the result does not depend on whether the suite runs under Claude Code."""
 
-    def test_owner_pid_disabled_outside_cc_environment(self):
-        # In the pytest process there is no `claude` ancestor.
-        c = client_mod.Client(name="x")
-        # find_cc_ancestor_pid returns -1 outside CC, which disables the
-        # watch (the run() loop checks owner_pid > 0).
-        assert c.owner_pid <= 0 or c.owner_pid != os.getpid()
+    def test_owner_pid_is_the_session_pid(self, standins, tmp_data_dir):
+        r = run_probe(standins, [standins["claude"], standins["sh"]], owner=True)
+        assert r["owner_pid"] == r["chain"][0], r
+
+    def test_owner_pid_disabled_outside_cc_environment(self, standins, tmp_data_dir):
+        # Detached from every Claude Code process: find_cc_ancestor_pid
+        # returns -1, which disables the watch (run() checks owner_pid > 0).
+        r = run_probe(standins, [standins["sh"]], detached=True, owner=True)
+        assert r["cc"] == -1, f"precondition: chain not detached: {r}"
+        assert r["owner_pid"] == -1, r
 
     def test_explicit_owner_pid_used(self):
         c = client_mod.Client(name="x", owner_pid=12345)

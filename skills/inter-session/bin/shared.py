@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import enum
 import json
+import math
 import os
 import re
 import secrets
@@ -98,6 +99,36 @@ CLOSE_CODE_FORCE_DISCONNECT = 4001
 REAP_INTERVAL_S = 10
 REAP_MISS_THRESHOLD = 3
 
+# Upper bound in seconds on handing one frame to a peer's socket. A peer that
+# does not take a frame within it is treated as gone: the server aborts its
+# connection and announces peer_left. INTER_SESSION_SEND_TIMEOUT_S overrides.
+SEND_TIMEOUT_S = 5.0
+
+
+def send_timeout_s() -> float:
+    """The send timeout in effect: INTER_SESSION_SEND_TIMEOUT_S when it is a
+    finite number above 0, else SEND_TIMEOUT_S. The server and send.py both
+    read it, so a sender started in the server's environment waits for the
+    bound the server applies."""
+    try:
+        value = float(os.environ.get("INTER_SESSION_SEND_TIMEOUT_S", ""))
+    except ValueError:
+        return SEND_TIMEOUT_S
+    if not math.isfinite(value) or value <= 0:
+        return SEND_TIMEOUT_S
+    return value
+
+
+# Message bytes the server holds for one peer that has not taken them yet. A
+# direct message beyond this is refused with delivery_timeout.
+OUTBOX_MAX_BYTES = 4 * WS_FRAME_CAP
+# Server keepalive: protocol-level ping frames, which the peer's websockets
+# library answers without the application. A peer that does not answer within
+# WS_PING_TIMEOUT_S is dropped. INTER_SESSION_WS_PING_INTERVAL_S and
+# INTER_SESSION_WS_PING_TIMEOUT_S override; 0 disables.
+WS_PING_INTERVAL_S = 20
+WS_PING_TIMEOUT_S = 20
+
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 LABEL_MAX_CP = 60
@@ -120,6 +151,7 @@ class ErrorCode:
     RATE_LIMITED = "rate_limited"
     HOP_LIMIT = "hop_limit"
     UNKNOWN_OP = "unknown_op"
+    DELIVERY_TIMEOUT = "delivery_timeout"
 
 
 def data_dir() -> Path:
@@ -508,7 +540,45 @@ def secure_file(path: Path) -> bool:
         return False
 
 
-def find_cc_ancestor_pid() -> int:
+CC_CERTAIN = 2
+CC_LOOSE = 1
+
+
+def _cc_kind(name: str, exe: str, cmdline: list[str]) -> int:
+    """Classify one process as Claude Code.
+
+    CC_CERTAIN: a property only Claude Code has. Process name or argv[0]
+      basename `claude`; an executable (or argv[0]) under a
+      `claude/versions/` directory, which is where the native build lives
+      and how it shows when its argv[0] or process name is the version
+      string (e.g. "2.1.119"); node or bun whose script is the
+      @anthropic-ai/claude-code package or its `claude` bin link.
+    CC_LOOSE: the older, wider rules only: argv[0] `claude-*`, or node with
+      `/claude`, `claude-code` or `/.claude/` anywhere in its arguments.
+      These also match unrelated node programs, such as a hook under
+      ~/.claude/ or a server in a `claude-*` directory.
+    0: neither.
+    """
+    argv0 = cmdline[0] if cmdline else ""
+    base = os.path.basename(argv0).lower()
+    if (name or "").lower() == "claude" or base == "claude":
+        return CC_CERTAIN
+    if "/claude/versions/" in (exe or "") or "/claude/versions/" in argv0:
+        return CC_CERTAIN
+    if base in ("node", "node.exe", "bun"):
+        script = next((a for a in cmdline[1:] if a and not a.startswith("-")), "")
+        if ("@anthropic-ai/claude-code" in script
+                or os.path.basename(script).lower() == "claude"):
+            return CC_CERTAIN
+        joined = " ".join(cmdline[1:]).lower()
+        if "/claude" in joined or "claude-code" in joined or "/.claude/" in joined:
+            return CC_LOOSE
+    if base.startswith("claude-"):
+        return CC_LOOSE
+    return 0
+
+
+def find_cc_ancestor_pid(start_pid: int | None = None, strict: bool = False) -> int:
     """Walk up the process tree, return the pid of the first Claude Code
     ancestor. Returns -1 if none found.
 
@@ -518,17 +588,23 @@ def find_cc_ancestor_pid() -> int:
     both share the CC main process as a common ancestor — keying state files
     by that pid makes them mutually discoverable.
 
-    Detection: match on `cmdline[0]` basename, NOT `psutil.Process.name()`.
-    Modern CC sets its proctitle to its version string (e.g., "2.1.119"),
-    which makes `p.name()` useless. The actual binary basename in
-    `cmdline[0]` is reliably `claude` (or `node` for older bundles).
+    The walk starts at `start_pid` (default: the parent of this process).
+    By default the first process `_cc_kind` matches at all is returned (the
+    listener key). With `strict`, only a CC_CERTAIN match counts: discover.py
+    ends its state-file walk there, so a loose match never makes a helper
+    "not connected".
+
+    Detection reads `cmdline[0]`, the process name and the executable path.
+    The native build runs from `.../claude/versions/<version>`; when its
+    argv[0] or name is that version string, only the executable path shows
+    it is Claude Code.
     """
     try:
         import psutil
     except ImportError:
         return -1
 
-    pid = os.getppid()
+    pid = os.getppid() if start_pid is None else start_pid
     seen: set[int] = set()
     while pid and pid not in seen and pid != 1:
         seen.add(pid)
@@ -540,18 +616,17 @@ def find_cc_ancestor_pid() -> int:
             cmd = p.cmdline()
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             cmd = []
-        if cmd:
-            exe = os.path.basename(cmd[0]).lower()
-            if exe == "claude" or exe.startswith("claude-"):
-                return pid
-            if exe in ("node", "node.exe"):
-                joined = " ".join(cmd[1:]).lower()
-                if (
-                    "/claude" in joined
-                    or "claude-code" in joined
-                    or "/.claude/" in joined
-                ):
-                    return pid
+        try:
+            name = p.name()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            name = ""
+        try:
+            exe = p.exe()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            exe = ""
+        kind = _cc_kind(name, exe, cmd)
+        if kind == CC_CERTAIN or (kind and not strict):
+            return pid
         try:
             pid = p.ppid()
         except (psutil.NoSuchProcess, psutil.AccessDenied):
