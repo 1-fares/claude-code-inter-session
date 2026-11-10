@@ -35,21 +35,56 @@ import websockets
 from bin import discover
 
 
+# A note shorter than this, after clipping, carries little beyond its
+# ellipsis; below it the note is dropped and the bare pointer is sent.
+_MIN_NOTE_ROOM = 20
+
+
 def _compose_text(text, file) -> str:
     """Build the message body to send.
 
     With --file, send a short pointer instructing the receiver to read the
     file directly (via its own Read tool) rather than streaming the body
-    through the bus. This sidesteps the stdout notification cap entirely:
-    the pointer is tiny, and the receiver gets the full content from the
-    file. The path is resolved to an absolute path and must exist."""
+    through the bus. The path is resolved to an absolute path and must exist.
+
+    The receiver prints only the first shared.STDOUT_CAP characters of a
+    body, and the pointer follows the note, so an over-cap message loses the
+    end of the path while the rest still looks like a complete path. The
+    note keeps its place at the front (receivers read a leading `done:`,
+    `status:` or `question:` as the kind of message), and the cap is spent
+    on the pointer instead: a message that fits is sent unchanged; otherwise
+    the note is clipped to the room the pointer leaves, or dropped when that
+    room is under _MIN_NOTE_ROOM. Clipping and dropping are reported on
+    stderr. A pointer that does not fit on its own raises ValueError: no
+    composition can deliver that path intact."""
     if file:
         abspath = Path(file).expanduser().resolve(strict=True)  # raises if missing
         if not abspath.is_file():
             raise ValueError(f"not a regular file: {abspath}")
+        cap = shared.STDOUT_CAP
+        bare = f"read and execute the task in the file at {abspath}"
         if text:
-            return f"{text} (read the file at {abspath} and act on it)"
-        return f"read and execute the task in the file at {abspath}"
+            suffix = f" (read the file at {abspath} and act on it)"
+            if len(text) + len(suffix) <= cap:
+                return f"{text}{suffix}"
+            room = cap - len(suffix)
+            if room >= _MIN_NOTE_ROOM:
+                print(f"note clipped from {len(text)} to {room} chars so the file "
+                      f"pointer fits the {cap}-char notification cap",
+                      file=sys.stderr)
+                return f"{text[:room - 3]}...{suffix}"
+            if len(bare) <= cap:
+                print(f"note dropped: the file pointer takes {len(suffix)} of the "
+                      f"{cap}-char notification cap; sending the pointer alone",
+                      file=sys.stderr)
+                return bare
+        if len(bare) > cap:
+            raise ValueError(
+                f"the file pointer would be {len(bare)} chars, over the "
+                f"{cap}-char notification cap, and the receiver would get a "
+                f"clipped path; use a file at a shorter path "
+                f"({abspath} is {len(str(abspath))} chars)")
+        return bare
     return text
 
 

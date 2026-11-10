@@ -379,7 +379,10 @@ with a note:   Bash("python3 <bin>/send.py --to <target> --text '<note>' --file 
 The peer receives a short line like
 `read and execute the task in the file at /abs/path` (well under the cap),
 opens the file, and acts on the full content. The path is resolved to an
-absolute path and must exist when you send.
+absolute path and must exist when you send. With a `--text` note the note comes first; if
+note plus pointer would exceed the receiver's notification cap, the note is
+shortened (or dropped) so that the path arrives whole, and a path too long for
+the cap is refused.
 
 ## Truncated messages
 
