@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import subprocess
 import sys
+import time
 import uuid
+from collections import deque
 
 import pytest
 import websockets
@@ -448,9 +451,8 @@ class TestBroadcast:
         ws_peer = await _connect(port)
         await _hello(ws_peer, token, name="beta")
         try:
-            errs = 0
-            successes = 0
-            for i in range(shared.BROADCAST_RATE_LIMIT_PER_MIN + 5):
+            limit = shared.BROADCAST_RATE_LIMIT_PER_MIN
+            for i in range(limit + 5):
                 ws_ctrl = await _connect(port)
                 try:
                     await _send_op(
@@ -460,18 +462,23 @@ class TestBroadcast:
                         for_session=sid, nonce=listener_nonce, token=token,
                     )
                     welcome = await _recv(ws_ctrl)
-                    if welcome["op"] == "error":
-                        break
+                    assert welcome["op"] == "welcome", welcome
                     await _send_op(ws_ctrl, "broadcast", text=f"rl#{i}")
-                    try:
-                        resp = await _recv(ws_ctrl, timeout=0.3)
-                        if resp.get("op") == "error" and resp.get("code") == shared.ErrorCode.RATE_LIMITED:
-                            errs += 1
-                    except asyncio.TimeoutError:
-                        successes += 1
+                    if i < limit:
+                        # An accepted broadcast has no ack; the peer's copy
+                        # is the signal. Reading it also keeps the peer's
+                        # queue empty, so its close does not time out.
+                        msg = await _recv_until(ws_peer, "msg")
+                        assert msg.get("text") == f"rl#{i}", msg
+                    else:
+                        err = await _recv(ws_ctrl)
+                        assert err.get("code") == shared.ErrorCode.RATE_LIMITED, err
                 finally:
                     await ws_ctrl.close()
-            assert errs >= 1, f"rate limit never fired ({errs} errs / {successes} successes)"
+            # Rejected broadcasts reach nobody.
+            late = [m for m in await _drain(ws_peer, timeout=0.2)
+                    if m.get("op") == "msg"]
+            assert late == [], late
         finally:
             await ws_listener.close()
             await ws_peer.close()
@@ -1281,3 +1288,120 @@ class TestOrphanReap:
                 await asyncio.wait_for(task, timeout=2.0)
             except asyncio.TimeoutError:
                 task.cancel()
+
+
+class TestNameTakenCandidates:
+    """NAME_TAKEN candidates must be valid names that are not in use:
+    client.py retries with candidates[0] without checking it."""
+
+    async def test_candidates_fit_name_length_limit(self, running_server):
+        srv, port, token = running_server
+        long_name = "a" * 40
+        ws1 = await _connect(port)
+        ws2 = await _connect(port)
+        try:
+            await _hello(ws1, token, name=long_name)
+            _, err = await _hello(ws2, token, name=long_name)
+            assert err["code"] == shared.ErrorCode.NAME_TAKEN
+            assert err["candidates"]
+            for c in err["candidates"]:
+                assert shared.validate_name(c), c
+        finally:
+            await ws1.close()
+            await ws2.close()
+
+    async def test_candidates_skip_names_in_use(self, running_server):
+        srv, port, token = running_server
+        ws1 = await _connect(port)
+        ws2 = await _connect(port)
+        ws3 = await _connect(port)
+        try:
+            await _hello(ws1, token, name="gamma")
+            await _hello(ws2, token, name="gamma-2")
+            _, err = await _hello(ws3, token, name="gamma")
+            assert err["code"] == shared.ErrorCode.NAME_TAKEN
+            assert err["candidates"][0] == "gamma-3"
+            assert "gamma-2" not in err["candidates"]
+        finally:
+            await ws1.close()
+            await ws2.close()
+            await ws3.close()
+
+
+class TestRejectedReconnectKeepsRegistration:
+    """A same-session_id hello that is rejected (here NAME_TAKEN) must leave
+    the existing registration in place. The entry used to be popped before
+    the name check, leaving the old connection open but unlisted and
+    unaddressable, with no peer_left."""
+
+    async def test_name_taken_on_reconnect_keeps_existing_entry(self, running_server):
+        srv, port, token = running_server
+        sid = str(uuid.uuid4())
+        nonce = "keep-nonce"
+        ws1 = await _connect(port)
+        ws_b = await _connect(port)
+        ws2 = await _connect(port)
+        try:
+            _, welcome = await _hello(ws1, token, name="alpha", session_id=sid, nonce=nonce)
+            assert welcome["op"] == "welcome"
+            await _hello(ws_b, token, name="beta")
+            _, err = await _hello(ws2, token, name="beta", session_id=sid, nonce=nonce)
+            assert err["code"] == shared.ErrorCode.NAME_TAKEN
+            await _send_op(ws_b, "list")
+            resp = await _recv_until(ws_b, "list_ok")
+            assert sid in {s["session_id"] for s in resp["sessions"]}
+            await _send_op(ws_b, "send", to="alpha", text="still here")
+            msg = await _recv_until(ws1, "msg")
+            assert msg["text"] == "still here"
+        finally:
+            await ws1.close()
+            await ws_b.close()
+            await ws2.close()
+
+
+class TestBroadcastWindowPruning:
+    """Rate-limit windows whose newest entry is older than the 60 s window
+    limit nothing; they are dropped instead of kept for the server's life."""
+
+    async def test_expired_windows_are_dropped(self, running_server):
+        srv, port, token = running_server
+        stale_sid = "stale-" + str(uuid.uuid4())
+        srv._broadcast_windows[stale_sid] = deque([time.monotonic() - 120])
+        ws_a = await _connect(port)
+        ws_b = await _connect(port)
+        try:
+            sid_a, _ = await _hello(ws_a, token, name="alpha")
+            await _hello(ws_b, token, name="beta")
+            await _send_op(ws_a, "broadcast", text="x")
+            msg = await _recv_until(ws_b, "msg")
+            assert msg["text"] == "x"
+            assert stale_sid not in srv._broadcast_windows
+            assert len(srv._broadcast_windows[sid_a]) == 1
+        finally:
+            await ws_a.close()
+            await ws_b.close()
+
+
+class TestMessagesLogWriteFailure:
+    """A failed messages.log write is logged (without the body) and does not
+    block delivery."""
+
+    async def test_write_failure_is_logged(self, running_server, caplog):
+        srv, port, token = running_server
+        shared.messages_log_path().mkdir()  # append-open of a directory fails
+        ws_a = await _connect(port)
+        ws_b = await _connect(port)
+        try:
+            await _hello(ws_a, token, name="alpha")
+            await _hello(ws_b, token, name="beta")
+            with caplog.at_level(logging.WARNING, logger="inter-session.server"):
+                await _send_op(ws_a, "send", to="beta", text="secret-body")
+                msg = await _recv_until(ws_b, "msg")
+            assert msg["text"] == "secret-body"
+            warnings = [r.getMessage() for r in caplog.records
+                        if r.name == "inter-session.server" and r.levelno == logging.WARNING]
+            assert any("messages.log" in w for w in warnings), warnings
+            assert not any("secret-body" in w for w in warnings)
+        finally:
+            await ws_a.close()
+            await ws_b.close()

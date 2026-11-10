@@ -42,6 +42,23 @@ from bin import shared
 
 log = logging.getLogger("inter-session.server")
 
+# Longest name shared.NAME_RE accepts.
+_NAME_MAX_LEN = 40
+
+
+def _name_candidates(name: str, taken: set, count: int = 3) -> list[str]:
+    """Up to `count` names `<name>-<i>` (i >= 2) that are valid and not in
+    `taken`. The base is shortened so the suffix fits _NAME_MAX_LEN."""
+    out: list[str] = []
+    i = 2
+    while len(out) < count:
+        suffix = f"-{i}"
+        cand = name[:_NAME_MAX_LEN - len(suffix)] + suffix
+        if cand not in taken:
+            out.append(cand)
+        i += 1
+    return out
+
 
 @dataclass
 class ClientState:
@@ -453,20 +470,22 @@ class Server:
                         "session_id is in use by another connection",
                         {},
                     )
-                else:
+            if reject is None and name:
+                # The entry this hello replaces (same sid) does not hold the
+                # name against it. Nothing is popped before this check, so a
+                # rejected hello leaves the registry as it was.
+                taken = {c.name for c in self._registry.values()
+                         if c.role == shared.Role.AGENT and c.session_id != sid}
+                if name in taken:
+                    reject = (
+                        shared.ErrorCode.NAME_TAKEN,
+                        f"name {name!r} is taken",
+                        {"candidates": _name_candidates(name, taken)},
+                    )
+            if reject is None:
+                if existing_same_sid is not None:
                     old_ws_to_close = existing_same_sid.ws
                     self._registry.pop(sid, None)
-            if reject is None and name:
-                for existing in self._registry.values():
-                    if existing.role == shared.Role.AGENT and existing.name == name:
-                        candidates = [f"{name}-{i}" for i in range(2, 5)]
-                        reject = (
-                            shared.ErrorCode.NAME_TAKEN,
-                            f"name {name!r} is taken",
-                            {"candidates": candidates},
-                        )
-                        break
-            if reject is None:
                 state = ClientState(
                     session_id=sid,
                     role=role,
@@ -702,6 +721,12 @@ class Server:
         # bypass the cap. Charge AFTER liveness so dead-listener attempts
         # don't consume quota.
         now = time.monotonic()
+        # Drop windows whose newest entry is past the 60 s horizon: they limit
+        # nothing, and kept they grow the dict by one entry per session that
+        # ever broadcast.
+        for sid in [k for k, w in self._broadcast_windows.items()
+                    if not w or (now - w[-1]) > 60]:
+            del self._broadcast_windows[sid]
         window = self._broadcast_windows.setdefault(from_id, deque())
         while window and (now - window[0]) > 60:
             window.popleft()
@@ -751,8 +776,10 @@ class Server:
                 os.chmod(path, 0o600)
             except OSError:
                 pass
-        except OSError:
-            pass
+        except OSError as e:
+            # Delivery goes on; record that the durable copy is missing.
+            log.warning("messages.log write failed for msg_id=%s: %s",
+                        msg.get("msg_id", ""), e)
 
     async def _handle_rename(self, state: ClientState, payload) -> None:
         new_name = payload.get("name", "")
